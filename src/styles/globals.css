@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground: #1a202c;
+  --background: #ffffff;
+  --primary: #2563eb;
+  --secondary: #6b7280;
+  --accent: #3b82f6;
+  --card-bg: #f3f4f6;
+}
+
+.dark {
+  --foreground: #f3f4f6;
+  --background: #121826;
+  --primary: #3b82f6;
+  --secondary: #9ca3af;
+  --accent: #60a5fa;
+  --card-bg: #1e293b;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+@layer base {
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-bold;
+  }
+  
+  h1 {
+    @apply text-4xl md:text-5xl;
+  }
+  
+  h2 {
+    @apply text-3xl md:text-4xl;
+  }
+  
+  button {
+    @apply transition-colors duration-200;
+  }
+} 
