@@ -22,10 +22,10 @@ export default function Home() {
               alt="Children playing chess" 
               fill
               priority
-              className="object-cover"
+              className="object-cover object-top"
             />
-            <div className="absolute inset-0 bg-black bg-opacity-40 flex flex-col justify-center items-start p-10">
-              <h1 className="text-white font-bold mb-4">
+            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-transparent flex flex-col justify-end items-start p-10">
+              <h1 className="text-white font-bold text-4xl mb-3">
                 Learn and play chess with the best
               </h1>
               <p className="text-white text-lg mb-6">
@@ -43,14 +43,16 @@ export default function Home() {
           <h2 className="text-foreground mb-6">About</h2>
           <div className="bg-cardBg rounded-lg p-6 shadow-md">
             <p className="text-foreground mb-4">
-              The Genius Chess Academy is a local chess school that has been teaching children and adults from beginners to advanced 
-              players since 2010. Our philosophy is to create a fun and engaging environment for our students to learn and grow their
-              chess skills. We believe that every student has the potential to become a great chess player with the right guidance and
-              support.
+            Since 2000, Genius Chess Academy has been a cornerstone of the local chess community in Surat, passionately nurturing the strategic minds of children and adults alike. From absolute beginners taking their first steps on the 64 squares to advanced players honing their tournament skills, we provide a fun, engaging, and supportive environment where every student can unlock their full chess potential.
             </p>
-            <p className="text-foreground">
-              Our head coach, Kanaiyalal Jariwala, is an experienced chess player and coach with 25 years of experience who has helped many students achieve
-              success in chess tournaments.
+            <p className="text-foreground mb-4">
+              At Genius Chess Academy, we believe that with the right guidance, every individual can develop into a formidable chess player. Our philosophy centers on creating a dynamic learning experience that fosters both a deep understanding of chess principles and a genuine love for the game.
+            </p>
+            <p className="text-foreground mb-4">
+              Guiding our students is our esteemed head coach, Kanaiyalal Jariwala. With an impressive 25 years of experience in both playing and coaching chess, Kanaiyalal brings a wealth of knowledge and a proven track record of success. He has personally mentored numerous students who have achieved significant milestones in chess tournaments at various levels. His patient approach and insightful guidance are instrumental in helping each student not only grasp the intricacies of chess but also develop critical thinking, problem-solving skills, and the strategic foresight that extends far beyond the chessboard.
+            </p>
+            <p className="text-foreground mb-4">
+              Join the Genius Chess Academy family and embark on your own exciting chess journey!
             </p>
           </div>
         </section>
