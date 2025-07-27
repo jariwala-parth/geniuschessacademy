@@ -5,7 +5,25 @@ import com.amazonaws.auth.BasicAWSCredentials;
 import com.amazonaws.regions.Regions;
 import com.amazonaws.services.cognitoidp.AWSCognitoIdentityProvider;
 import com.amazonaws.services.cognitoidp.AWSCognitoIdentityProviderClientBuilder;
-import com.amazonaws.services.cognitoidp.model.*;
+import com.amazonaws.services.cognitoidp.model.AdminConfirmSignUpRequest;
+import com.amazonaws.services.cognitoidp.model.AdminInitiateAuthRequest;
+import com.amazonaws.services.cognitoidp.model.AdminInitiateAuthResult;
+import com.amazonaws.services.cognitoidp.model.AttributeType;
+import com.amazonaws.services.cognitoidp.model.AuthFlowType;
+import com.amazonaws.services.cognitoidp.model.AuthenticationResultType;
+import com.amazonaws.services.cognitoidp.model.ChangePasswordRequest;
+import com.amazonaws.services.cognitoidp.model.CodeMismatchException;
+import com.amazonaws.services.cognitoidp.model.ConfirmForgotPasswordRequest;
+import com.amazonaws.services.cognitoidp.model.ExpiredCodeException;
+import com.amazonaws.services.cognitoidp.model.ForgotPasswordRequest;
+import com.amazonaws.services.cognitoidp.model.GlobalSignOutRequest;
+import com.amazonaws.services.cognitoidp.model.InvalidPasswordException;
+import com.amazonaws.services.cognitoidp.model.NotAuthorizedException;
+import com.amazonaws.services.cognitoidp.model.SignUpRequest;
+import com.amazonaws.services.cognitoidp.model.SignUpResult;
+import com.amazonaws.services.cognitoidp.model.UserNotConfirmedException;
+import com.amazonaws.services.cognitoidp.model.UserNotFoundException;
+import com.amazonaws.services.cognitoidp.model.UsernameExistsException;
 import com.pjariwala.dto.AuthRequest;
 import com.pjariwala.dto.AuthResponse;
 import com.pjariwala.dto.SignupRequest;
@@ -162,6 +180,8 @@ public class AuthServiceImpl implements AuthService {
       }
 
       // Create user in Cognito User Pool
+      // NOTE: Consider using email as username for better UX in future:
+      // .withUsername(signupRequest.getEmail()) instead of signupRequest.getUsername()
       SignUpRequest cognitoSignupRequest =
           new SignUpRequest()
               .withClientId(clientId)
@@ -232,6 +252,7 @@ public class AuthServiceImpl implements AuthService {
       user.setEmail(signupRequest.getEmail());
       user.setName(signupRequest.getName());
       user.setPhoneNumber(signupRequest.getPhoneNumber());
+      user.setUsername(signupRequest.getUsername()); // ✅ Store Cognito username
       user.setCognitoSub(signUpResult.getUserSub());
       user.setIsActive(true);
       user.setCreatedAt(LocalDateTime.now());
@@ -257,7 +278,7 @@ public class AuthServiceImpl implements AuthService {
       AuthResponse response =
           login(
               new AuthRequest(
-                  signupRequest.getEmail(),
+                  signupRequest.getUsername(),
                   signupRequest.getPassword(),
                   signupRequest.getUserType()));
 
@@ -292,15 +313,43 @@ public class AuthServiceImpl implements AuthService {
       // Validate input
       validateAuthRequest(authRequest);
 
-      // Prepare authentication parameters
-      log.debug("Preparing authentication parameters for Cognito");
-      Map<String, String> authParameters = new HashMap<>();
-      authParameters.put("USERNAME", authRequest.getLogin());
-      authParameters.put("PASSWORD", authRequest.getPassword());
-      authParameters.put("SECRET_HASH", calculateSecretHash(authRequest.getLogin()));
+      // ✅ STEP 1: Find user in our system first to get the Cognito username
+      log.debug("Retrieving user information from our system for: {}", authRequest.getLogin());
+      User user =
+          userService
+              .getUserByUsername(authRequest.getLogin())
+              .or(() -> userService.getUserByEmail(authRequest.getLogin()))
+              .or(() -> userService.getUserByPhone(authRequest.getLogin()))
+              .orElseThrow(
+                  () -> {
+                    log.error("User not found in our system for login: {}", authRequest.getLogin());
+                    return AuthException.invalidCredentials();
+                  });
 
-      // Initiate authentication with Cognito
-      log.debug("Initiating authentication with Cognito for user: {}", authRequest.getLogin());
+      log.info(
+          "User found in our system - userId: {}, cognitoUsername: {} for login: {}",
+          user.getUserId(),
+          user.getUsername(),
+          authRequest.getLogin());
+
+      // ✅ STEP 2: Use the stored Cognito username for authentication
+      String cognitoUsername = user.getUsername();
+      if (cognitoUsername == null || cognitoUsername.trim().isEmpty()) {
+        log.error("Cognito username not found for user: {}", authRequest.getLogin());
+        throw AuthException.invalidCredentials();
+      }
+
+      // ✅ STEP 3: Prepare authentication parameters with correct username
+      log.debug(
+          "Preparing authentication parameters for Cognito with username: {}", cognitoUsername);
+      Map<String, String> authParameters = new HashMap<>();
+      authParameters.put("USERNAME", cognitoUsername);
+      authParameters.put("PASSWORD", authRequest.getPassword());
+      authParameters.put(
+          "SECRET_HASH", calculateSecretHash(cognitoUsername));
+
+      // ✅ STEP 4: Initiate authentication with Cognito
+      log.debug("Initiating authentication with Cognito for username: {}", cognitoUsername);
       AdminInitiateAuthRequest initiateAuthRequest =
           new AdminInitiateAuthRequest()
               .withUserPoolId(userPoolId)
@@ -332,24 +381,6 @@ public class AuthServiceImpl implements AuthService {
 
       log.info("Cognito authentication successful for user: {}", authRequest.getLogin());
 
-      // Get user information from our system - try username, email, or phone
-      log.debug("Retrieving user information from our system for: {}", authRequest.getLogin());
-      User user =
-          userService
-              .getUserByUsername(authRequest.getLogin())
-              .or(() -> userService.getUserByEmail(authRequest.getLogin()))
-              .or(() -> userService.getUserByPhone(authRequest.getLogin()))
-              .orElseThrow(
-                  () -> {
-                    log.error("User not found in our system for login: {}", authRequest.getLogin());
-                    return AuthException.invalidCredentials();
-                  });
-
-      log.info(
-          "User found in our system - userId: {} for login: {}",
-          user.getUserId(),
-          authRequest.getLogin());
-
       // Build response with real JWT tokens from Cognito
       AuthResponse response = new AuthResponse();
       response.setAccessToken(authenticationResult.getAccessToken());
@@ -378,6 +409,10 @@ public class AuthServiceImpl implements AuthService {
       throw AuthException.emailNotConfirmed();
     } catch (Exception e) {
       log.error("Login failed: Unexpected error for user: {}", authRequest.getLogin(), e);
+      // Add more specific error details for debugging
+      if (e.getMessage() != null) {
+        log.error("Cognito error details: {}", e.getMessage());
+      }
       throw AuthException.cognitoError("Login failed", e);
     }
   }
@@ -508,12 +543,32 @@ public class AuthServiceImpl implements AuthService {
         throw new RuntimeException("Login (username, email, or phone) is required");
       }
 
-      log.debug("Initiating forgot password with Cognito for user: {}", login);
+      // ✅ Find user to get Cognito username
+      log.debug("Retrieving user information from our system for: {}", login);
+      User user =
+          userService
+              .getUserByUsername(login)
+              .or(() -> userService.getUserByEmail(login))
+              .or(() -> userService.getUserByPhone(login))
+              .orElseThrow(
+                  () -> {
+                    log.error("User not found in our system for login: {}", login);
+                    return new RuntimeException("User not found");
+                  });
+
+      String cognitoUsername = user.getUsername();
+      if (cognitoUsername == null || cognitoUsername.trim().isEmpty()) {
+        log.error("Cognito username not found for user: {}", login);
+        throw new RuntimeException("User not found");
+      }
+
+      log.debug("Initiating forgot password with Cognito for username: {}", cognitoUsername);
       ForgotPasswordRequest forgotPasswordRequest =
           new ForgotPasswordRequest()
               .withClientId(clientId)
-              .withUsername(login)
-              .withSecretHash(calculateSecretHash(login));
+              .withUsername(cognitoUsername) // ✅ Use actual Cognito username
+              .withSecretHash(
+                  calculateSecretHash(cognitoUsername)); // ✅ Calculate with correct username
 
       cognitoClient.forgotPassword(forgotPasswordRequest);
       log.info("Forgot password initiated successfully for user: {}", login);
@@ -548,14 +603,34 @@ public class AuthServiceImpl implements AuthService {
         throw new RuntimeException("New password must be at least 8 characters long");
       }
 
-      log.debug("Confirming forgot password with Cognito for user: {}", login);
+      // ✅ Find user to get Cognito username
+      log.debug("Retrieving user information from our system for: {}", login);
+      User user =
+          userService
+              .getUserByUsername(login)
+              .or(() -> userService.getUserByEmail(login))
+              .or(() -> userService.getUserByPhone(login))
+              .orElseThrow(
+                  () -> {
+                    log.error("User not found in our system for login: {}", login);
+                    return new RuntimeException("User not found");
+                  });
+
+      String cognitoUsername = user.getUsername();
+      if (cognitoUsername == null || cognitoUsername.trim().isEmpty()) {
+        log.error("Cognito username not found for user: {}", login);
+        throw new RuntimeException("User not found");
+      }
+
+      log.debug("Confirming forgot password with Cognito for username: {}", cognitoUsername);
       ConfirmForgotPasswordRequest confirmRequest =
           new ConfirmForgotPasswordRequest()
               .withClientId(clientId)
-              .withUsername(login)
+              .withUsername(cognitoUsername) // ✅ Use actual Cognito username
               .withConfirmationCode(confirmationCode)
               .withPassword(newPassword)
-              .withSecretHash(calculateSecretHash(login));
+              .withSecretHash(
+                  calculateSecretHash(cognitoUsername)); // ✅ Calculate with correct username
 
       cognitoClient.confirmForgotPassword(confirmRequest);
       log.info("Password reset completed successfully for user: {}", login);
