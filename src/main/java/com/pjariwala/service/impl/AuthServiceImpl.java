@@ -345,8 +345,7 @@ public class AuthServiceImpl implements AuthService {
       Map<String, String> authParameters = new HashMap<>();
       authParameters.put("USERNAME", cognitoUsername);
       authParameters.put("PASSWORD", authRequest.getPassword());
-      authParameters.put(
-          "SECRET_HASH", calculateSecretHash(cognitoUsername));
+      authParameters.put("SECRET_HASH", calculateSecretHash(cognitoUsername));
 
       // ✅ STEP 4: Initiate authentication with Cognito
       log.debug("Initiating authentication with Cognito for username: {}", cognitoUsername);

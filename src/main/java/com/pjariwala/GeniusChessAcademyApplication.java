@@ -19,7 +19,15 @@ import org.springframework.context.annotation.Import;
   AuthServiceImpl.class,
   UserServiceImpl.class,
   JwtUtil.class,
-  LocalDateTimeConverter.class
+  LocalDateTimeConverter.class,
+  // Batch APIs
+  com.pjariwala.controller.BatchController.class,
+  com.pjariwala.service.impl.BatchServiceImpl.class,
+  com.pjariwala.util.LocalDateConverter.class,
+  com.pjariwala.util.LocalTimeConverter.class,
+  // Enrollment APIs
+  com.pjariwala.controller.EnrollmentController.class,
+  com.pjariwala.service.impl.EnrollmentServiceImpl.class
 })
 public class GeniusChessAcademyApplication {
 
