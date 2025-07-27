@@ -16,10 +16,10 @@ public interface AuthService {
   AuthResponse refreshToken(String refreshToken);
 
   /** Logout user by invalidating tokens */
-  void logout(String accessToken);
+  void logout(String userId, String accessToken);
 
   /** Change user password */
-  void changePassword(String accessToken, String oldPassword, String newPassword);
+  void changePassword(String userId, String accessToken, String oldPassword, String newPassword);
 
   /** Initiate forgot password process */
   void forgotPassword(String login);

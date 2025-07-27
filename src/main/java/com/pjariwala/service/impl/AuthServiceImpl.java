@@ -285,21 +285,32 @@ public class AuthServiceImpl implements AuthService {
       log.info("Signup process completed successfully for email: {}", signupRequest.getEmail());
       return response;
 
+    } catch (AuthException e) {
+      // Re-throw our custom auth exceptions (like from auto-login) - don't wrap them
+      log.error(
+          "evt=signup_auth_error email={} code={} msg={}",
+          signupRequest.getEmail(),
+          e.getErrorCode(),
+          e.getMessage());
+      throw e;
     } catch (UsernameExistsException e) {
       log.error(
-          "Signup failed: Username already exists in Cognito for email: {}",
+          "evt=signup_username_exists email={} msg=username_already_exists",
           signupRequest.getEmail(),
           e);
       throw AuthException.userExists();
     } catch (InvalidPasswordException e) {
       log.error(
-          "Signup failed: Password does not meet Cognito requirements for email: {}",
+          "evt=signup_invalid_password email={} msg=password_requirements_not_met",
           signupRequest.getEmail(),
           e);
       throw AuthException.invalidPassword("Password does not meet requirements");
     } catch (Exception e) {
-      log.error("Signup failed: Unexpected error for email: {}", signupRequest.getEmail(), e);
-      throw AuthException.cognitoError("Signup failed", e);
+      log.error(
+          "evt=signup_system_error email={} msg=unexpected_system_error",
+          signupRequest.getEmail(),
+          e);
+      throw AuthException.cognitoError("System error during signup", e);
     }
   }
 
@@ -400,29 +411,55 @@ public class AuthServiceImpl implements AuthService {
       log.info("Login process completed successfully for user: {}", authRequest.getLogin());
       return response;
 
+    } catch (AuthException e) {
+      // Re-throw our custom auth exceptions (like user not found) - don't wrap them
+      log.error(
+          "evt=login_auth_error user={} code={} msg={}",
+          authRequest.getLogin(),
+          e.getErrorCode(),
+          e.getMessage());
+      throw e;
     } catch (NotAuthorizedException e) {
-      log.error("Login failed: Invalid credentials for user: {}", authRequest.getLogin(), e);
+      log.error(
+          "evt=login_cognito_unauthorized user={} msg=invalid_credentials",
+          authRequest.getLogin(),
+          e);
       throw AuthException.invalidCredentials();
     } catch (UserNotConfirmedException e) {
-      log.error("Login failed: Email not confirmed for user: {}", authRequest.getLogin(), e);
+      log.error(
+          "evt=login_cognito_unconfirmed user={} msg=email_not_confirmed",
+          authRequest.getLogin(),
+          e);
       throw AuthException.emailNotConfirmed();
+    } catch (UserNotFoundException e) {
+      log.error(
+          "evt=login_cognito_user_not_found user={} msg=user_not_found_in_cognito",
+          authRequest.getLogin(),
+          e);
+      throw AuthException.invalidCredentials();
     } catch (Exception e) {
-      log.error("Login failed: Unexpected error for user: {}", authRequest.getLogin(), e);
-      // Add more specific error details for debugging
-      if (e.getMessage() != null) {
-        log.error("Cognito error details: {}", e.getMessage());
+      // Only use 500 status for actual system errors, not authentication failures
+      log.error(
+          "evt=login_system_error user={} msg=unexpected_system_error", authRequest.getLogin(), e);
+      if (e.getMessage() != null && e.getMessage().toLowerCase().contains("invalid")) {
+        // If the error message suggests invalid credentials, treat as 401
+        log.warn(
+            "evt=login_treating_as_invalid_credentials user={} error_msg={}",
+            authRequest.getLogin(),
+            e.getMessage());
+        throw AuthException.invalidCredentials();
       }
-      throw AuthException.cognitoError("Login failed", e);
+      throw AuthException.cognitoError("System error during login", e);
     }
   }
 
   @Override
   public AuthResponse refreshToken(String refreshToken) {
-    log.info("Starting token refresh process");
+    log.info("evt=refresh_token_start");
     try {
       if (refreshToken == null || refreshToken.trim().isEmpty()) {
-        log.error("Token refresh failed: Refresh token is required");
-        throw new RuntimeException("Refresh token is required");
+        log.error("evt=refresh_token_error msg=refresh_token_required");
+        throw AuthException.validationError("Refresh token is required");
       }
 
       // Prepare authentication parameters for refresh
@@ -441,7 +478,8 @@ public class AuthServiceImpl implements AuthService {
       AuthenticationResultType authenticationResult = authResult.getAuthenticationResult();
 
       if (authenticationResult == null) {
-        throw new RuntimeException("Token refresh failed - no result returned");
+        log.error("evt=refresh_token_error msg=no_result_returned");
+        throw AuthException.invalidToken();
       }
 
       // Build response with new tokens
@@ -458,60 +496,66 @@ public class AuthServiceImpl implements AuthService {
         response.setRefreshToken(refreshToken); // Use the original refresh token
       }
 
-      log.info("Token refresh completed successfully");
+      log.info("evt=refresh_token_success");
       return response;
 
+    } catch (AuthException e) {
+      // Re-throw our custom auth exceptions - don't wrap them
+      throw e;
     } catch (NotAuthorizedException e) {
-      log.error("Token refresh failed: Invalid refresh token", e);
-      throw new RuntimeException("Invalid refresh token");
+      log.error("evt=refresh_token_unauthorized msg=invalid_refresh_token", e);
+      throw AuthException.invalidToken();
     } catch (Exception e) {
-      log.error("Token refresh failed: Unexpected error", e);
-      throw new RuntimeException("Error refreshing token: " + e.getMessage(), e);
+      log.error("evt=refresh_token_system_error msg=unexpected_error", e);
+      throw AuthException.cognitoError("System error during token refresh", e);
     }
   }
 
   @Override
-  public void logout(String accessToken) {
-    log.info("Starting logout process");
+  public void logout(String userId, String accessToken) {
+    log.info("evt=logout_start userId={}", userId);
     try {
       if (accessToken == null || accessToken.trim().isEmpty()) {
-        log.error("Logout failed: Access token is required");
-        throw new RuntimeException("Access token is required");
+        log.error("evt=logout_error userId={} msg=access_token_required", userId);
+        throw AuthException.invalidToken();
       }
 
       // Global sign out - invalidates all tokens for the user
-      log.debug("Initiating global sign out with Cognito");
+      log.debug("evt=logout_cognito_start userId={}", userId);
       GlobalSignOutRequest signOutRequest = new GlobalSignOutRequest().withAccessToken(accessToken);
 
       cognitoClient.globalSignOut(signOutRequest);
-      log.info("Logout completed successfully");
+      log.info("evt=logout_success userId={}", userId);
 
+    } catch (AuthException e) {
+      throw e;
     } catch (Exception e) {
-      log.error("Logout failed: Unexpected error", e);
-      throw new RuntimeException("Error during logout: " + e.getMessage(), e);
+      log.error("evt=logout_error userId={}", userId, e);
+      throw AuthException.cognitoError("Logout failed", e);
     }
   }
 
   @Override
-  public void changePassword(String accessToken, String oldPassword, String newPassword) {
-    log.info("Starting password change process");
+  public void changePassword(
+      String userId, String accessToken, String oldPassword, String newPassword) {
+    log.info("evt=change_password_start userId={}", userId);
     try {
       if (accessToken == null || accessToken.trim().isEmpty()) {
-        log.error("Password change failed: Access token is required");
-        throw new RuntimeException("Access token is required");
+        log.error("evt=change_password_error userId={} msg=access_token_required", userId);
+        throw AuthException.invalidToken();
       }
 
       if (oldPassword == null || oldPassword.trim().isEmpty()) {
-        log.error("Password change failed: Old password is required");
-        throw new RuntimeException("Old password is required");
+        log.error("evt=change_password_error userId={} msg=old_password_required", userId);
+        throw AuthException.validationError("Old password is required");
       }
 
       if (newPassword == null || newPassword.length() < 8) {
-        log.error("Password change failed: New password must be at least 8 characters long");
-        throw new RuntimeException("New password must be at least 8 characters long");
+        log.error("evt=change_password_error userId={} msg=new_password_too_short", userId);
+        throw AuthException.invalidPassword("New password must be at least 8 characters long");
       }
 
-      log.debug("Initiating password change with Cognito");
+      log.debug("evt=change_password_cognito_start userId={}", userId);
       ChangePasswordRequest changePasswordRequest =
           new ChangePasswordRequest()
               .withAccessToken(accessToken)
@@ -519,31 +563,33 @@ public class AuthServiceImpl implements AuthService {
               .withProposedPassword(newPassword);
 
       cognitoClient.changePassword(changePasswordRequest);
-      log.info("Password change completed successfully");
+      log.info("evt=change_password_success userId={}", userId);
 
+    } catch (AuthException e) {
+      throw e;
     } catch (InvalidPasswordException e) {
-      log.error("Password change failed: New password does not meet Cognito requirements", e);
-      throw new RuntimeException("New password does not meet requirements");
+      log.error("evt=change_password_error userId={} msg=invalid_password_format", userId, e);
+      throw AuthException.invalidPassword("New password does not meet requirements");
     } catch (NotAuthorizedException e) {
-      log.error("Password change failed: Invalid current password", e);
-      throw new RuntimeException("Invalid current password");
+      log.error("evt=change_password_error userId={} msg=invalid_current_password", userId, e);
+      throw AuthException.invalidCredentials();
     } catch (Exception e) {
-      log.error("Password change failed: Unexpected error", e);
-      throw new RuntimeException("Error changing password: " + e.getMessage(), e);
+      log.error("evt=change_password_error userId={}", userId, e);
+      throw AuthException.cognitoError("Password change failed", e);
     }
   }
 
   @Override
   public void forgotPassword(String login) {
-    log.info("Starting forgot password process for user: {}", login);
+    log.info("evt=forgot_password_start user={}", login);
     try {
       if (login == null || login.trim().isEmpty()) {
-        log.error("Forgot password failed: Login identifier is required");
-        throw new RuntimeException("Login (username, email, or phone) is required");
+        log.error("evt=forgot_password_error msg=login_required");
+        throw AuthException.validationError("Login (username, email, or phone) is required");
       }
 
       // ✅ Find user to get Cognito username
-      log.debug("Retrieving user information from our system for: {}", login);
+      log.debug("evt=forgot_password_lookup_user user={}", login);
       User user =
           userService
               .getUserByUsername(login)
@@ -551,17 +597,18 @@ public class AuthServiceImpl implements AuthService {
               .or(() -> userService.getUserByPhone(login))
               .orElseThrow(
                   () -> {
-                    log.error("User not found in our system for login: {}", login);
-                    return new RuntimeException("User not found");
+                    log.error("evt=forgot_password_user_not_found user={}", login);
+                    return new AuthException("USER_NOT_FOUND", "User not found", 404);
                   });
 
       String cognitoUsername = user.getUsername();
       if (cognitoUsername == null || cognitoUsername.trim().isEmpty()) {
-        log.error("Cognito username not found for user: {}", login);
-        throw new RuntimeException("User not found");
+        log.error("evt=forgot_password_cognito_username_missing user={}", login);
+        throw new AuthException("USER_NOT_FOUND", "User not found", 404);
       }
 
-      log.debug("Initiating forgot password with Cognito for username: {}", cognitoUsername);
+      log.debug(
+          "evt=forgot_password_cognito_request user={} cognitoUsername={}", login, cognitoUsername);
       ForgotPasswordRequest forgotPasswordRequest =
           new ForgotPasswordRequest()
               .withClientId(clientId)
@@ -570,40 +617,41 @@ public class AuthServiceImpl implements AuthService {
                   calculateSecretHash(cognitoUsername)); // ✅ Calculate with correct username
 
       cognitoClient.forgotPassword(forgotPasswordRequest);
-      log.info("Forgot password initiated successfully for user: {}", login);
+      log.info("evt=forgot_password_success user={}", login);
 
+    } catch (AuthException e) {
+      // Re-throw our custom auth exceptions - don't wrap them
+      throw e;
     } catch (UserNotFoundException e) {
-      log.error("Forgot password failed: User not found for: {}", login, e);
-      throw new RuntimeException("User not found");
+      log.error("evt=forgot_password_cognito_user_not_found user={}", login, e);
+      throw new AuthException("USER_NOT_FOUND", "User not found", 404);
     } catch (Exception e) {
-      log.error("Forgot password failed: Unexpected error for user: {}", login, e);
-      throw new RuntimeException("Error initiating forgot password: " + e.getMessage(), e);
+      log.error("evt=forgot_password_system_error user={}", login, e);
+      throw AuthException.cognitoError("System error during forgot password", e);
     }
   }
 
   @Override
   public void resetPassword(String login, String confirmationCode, String newPassword) {
-    log.info("Starting password reset process for user: {}", login);
+    log.info("evt=reset_password_start user={}", login);
     try {
       if (login == null || login.trim().isEmpty()) {
-        log.error("Password reset failed: Login identifier is required");
-        throw new RuntimeException("Login (username, email, or phone) is required");
+        log.error("evt=reset_password_error msg=login_required");
+        throw AuthException.validationError("Login (username, email, or phone) is required");
       }
 
       if (confirmationCode == null || confirmationCode.trim().isEmpty()) {
-        log.error("Password reset failed: Confirmation code is required for user: {}", login);
-        throw new RuntimeException("Confirmation code is required");
+        log.error("evt=reset_password_error user={} msg=confirmation_code_required", login);
+        throw AuthException.validationError("Confirmation code is required");
       }
 
       if (newPassword == null || newPassword.length() < 8) {
-        log.error(
-            "Password reset failed: New password must be at least 8 characters long for user: {}",
-            login);
-        throw new RuntimeException("New password must be at least 8 characters long");
+        log.error("evt=reset_password_error user={} msg=password_too_short", login);
+        throw AuthException.invalidPassword("New password must be at least 8 characters long");
       }
 
       // ✅ Find user to get Cognito username
-      log.debug("Retrieving user information from our system for: {}", login);
+      log.debug("evt=reset_password_lookup_user user={}", login);
       User user =
           userService
               .getUserByUsername(login)
@@ -611,17 +659,18 @@ public class AuthServiceImpl implements AuthService {
               .or(() -> userService.getUserByPhone(login))
               .orElseThrow(
                   () -> {
-                    log.error("User not found in our system for login: {}", login);
-                    return new RuntimeException("User not found");
+                    log.error("evt=reset_password_user_not_found user={}", login);
+                    return new AuthException("USER_NOT_FOUND", "User not found", 404);
                   });
 
       String cognitoUsername = user.getUsername();
       if (cognitoUsername == null || cognitoUsername.trim().isEmpty()) {
-        log.error("Cognito username not found for user: {}", login);
-        throw new RuntimeException("User not found");
+        log.error("evt=reset_password_cognito_username_missing user={}", login);
+        throw new AuthException("USER_NOT_FOUND", "User not found", 404);
       }
 
-      log.debug("Confirming forgot password with Cognito for username: {}", cognitoUsername);
+      log.debug(
+          "evt=reset_password_cognito_request user={} cognitoUsername={}", login, cognitoUsername);
       ConfirmForgotPasswordRequest confirmRequest =
           new ConfirmForgotPasswordRequest()
               .withClientId(clientId)
@@ -632,23 +681,23 @@ public class AuthServiceImpl implements AuthService {
                   calculateSecretHash(cognitoUsername)); // ✅ Calculate with correct username
 
       cognitoClient.confirmForgotPassword(confirmRequest);
-      log.info("Password reset completed successfully for user: {}", login);
+      log.info("evt=reset_password_success user={}", login);
 
+    } catch (AuthException e) {
+      // Re-throw our custom auth exceptions - don't wrap them
+      throw e;
     } catch (InvalidPasswordException e) {
-      log.error(
-          "Password reset failed: New password does not meet Cognito requirements for user: {}",
-          login,
-          e);
-      throw new RuntimeException("New password does not meet requirements");
+      log.error("evt=reset_password_invalid_password user={}", login, e);
+      throw AuthException.invalidPassword("New password does not meet requirements");
     } catch (CodeMismatchException e) {
-      log.error("Password reset failed: Invalid confirmation code for user: {}", login, e);
-      throw new RuntimeException("Invalid confirmation code");
+      log.error("evt=reset_password_invalid_code user={}", login, e);
+      throw AuthException.invalidCode();
     } catch (ExpiredCodeException e) {
-      log.error("Password reset failed: Confirmation code has expired for user: {}", login, e);
-      throw new RuntimeException("Confirmation code has expired");
+      log.error("evt=reset_password_expired_code user={}", login, e);
+      throw AuthException.expiredCode();
     } catch (Exception e) {
-      log.error("Password reset failed: Unexpected error for user: {}", login, e);
-      throw new RuntimeException("Error resetting password: " + e.getMessage(), e);
+      log.error("evt=reset_password_system_error user={}", login, e);
+      throw AuthException.cognitoError("System error during password reset", e);
     }
   }
 }

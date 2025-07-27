@@ -16,7 +16,9 @@ public class SwaggerConfig {
         .info(
             new Info()
                 .title("Genius Chess Academy API")
-                .description("REST API for chess academy management")
+                .description(
+                    "REST API for chess academy management. Most endpoints require JWT"
+                        + " authentication. Get token from /api/v1/auth/login first.")
                 .version("1.0.0"))
         .components(
             new Components()
@@ -26,6 +28,7 @@ public class SwaggerConfig {
                         .type(SecurityScheme.Type.HTTP)
                         .scheme("bearer")
                         .bearerFormat("JWT")
-                        .description("JWT token from /api/v1/auth/login")));
+                        .description(
+                            "JWT token from /api/v1/auth/login. Format: Bearer <your_jwt_token>")));
   }
 }

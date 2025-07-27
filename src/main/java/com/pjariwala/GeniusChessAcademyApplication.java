@@ -28,6 +28,9 @@ import org.springframework.context.annotation.Import;
   com.pjariwala.service.impl.EnrollmentServiceImpl.class,
   // Configuration
   com.pjariwala.config.SwaggerConfig.class,
+  com.pjariwala.config.WebConfig.class,
+  // Interceptors
+  com.pjariwala.interceptor.JwtAuthInterceptor.class,
   // Utils
   com.pjariwala.util.AuthUtil.class
 })

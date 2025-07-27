@@ -48,6 +48,11 @@ public class JwtUtil {
     }
   }
 
+  /** Extract Cognito sub from JWT token (clearer method name) */
+  public String getCognitoSubFromToken(String token) {
+    return getUserIdFromToken(token); // Delegate to existing method for now
+  }
+
   /** Extract email from JWT token */
   public String getEmailFromToken(String token) {
     try {
@@ -60,7 +65,24 @@ public class JwtUtil {
       String payload = new String(decoder.decode(chunks[1]));
 
       JsonNode jsonNode = objectMapper.readTree(payload);
-      return jsonNode.get("email").asText();
+
+      // Try email first, then username, then sub as fallback
+      JsonNode emailNode = jsonNode.get("email");
+      if (emailNode != null && !emailNode.isNull()) {
+        return emailNode.asText();
+      }
+
+      JsonNode usernameNode = jsonNode.get("username");
+      if (usernameNode != null && !usernameNode.isNull()) {
+        return usernameNode.asText();
+      }
+
+      JsonNode subNode = jsonNode.get("sub");
+      if (subNode != null && !subNode.isNull()) {
+        return subNode.asText();
+      }
+
+      throw new RuntimeException("No email, username, or sub field found in token");
 
     } catch (Exception e) {
       throw new RuntimeException("Error extracting email from token: " + e.getMessage(), e);
