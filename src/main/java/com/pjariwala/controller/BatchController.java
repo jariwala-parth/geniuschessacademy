@@ -5,6 +5,7 @@ import com.pjariwala.dto.BatchResponseDTO;
 import com.pjariwala.dto.PageResponseDTO;
 import com.pjariwala.model.Batch;
 import com.pjariwala.service.BatchService;
+import com.pjariwala.util.AuthUtil;
 import java.util.Optional;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -29,18 +31,25 @@ public class BatchController {
 
   @Autowired private BatchService batchService;
 
+  @Autowired private AuthUtil authUtil;
+
   @PostMapping
-  public ResponseEntity<BatchResponseDTO> createBatch(@RequestBody BatchRequestDTO batchRequest) {
+  public ResponseEntity<BatchResponseDTO> createBatch(
+      @RequestBody BatchRequestDTO batchRequest,
+      @RequestHeader("Authorization") String authorization) {
     log.info(
-        "evt=create_batch_request received batchName={} coachId={}",
+        "evt=create_batch_request batchName={} coachId={}",
         batchRequest.getBatchName(),
         batchRequest.getCoachId());
     try {
+      // Only coaches can create batches
+      authUtil.requireCoach(authorization);
+
       BatchResponseDTO response = batchService.createBatch(batchRequest);
-      log.info("evt=create_batch_response success batchId={}", response.getBatchId());
+      log.info("evt=create_batch_success batchId={}", response.getBatchId());
       return ResponseEntity.status(HttpStatus.CREATED).body(response);
     } catch (Exception e) {
-      log.error("evt=create_batch_response error batchName={}", batchRequest.getBatchName(), e);
+      log.error("evt=create_batch_error batchName={}", batchRequest.getBatchName(), e);
       throw e;
     }
   }

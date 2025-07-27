@@ -25,20 +25,16 @@ public class UserServiceImpl implements UserService {
 
   @Override
   public User createUser(User user) {
-    log.info(
-        "Creating new user with email: {} and userType: {}", user.getEmail(), user.getUserType());
+    log.info("evt=create_user_start email={} userType={}", user.getEmail(), user.getUserType());
     user.setCreatedAt(LocalDateTime.now());
     user.setUpdatedAt(LocalDateTime.now());
 
     try {
       dynamoDBMapper.save(user);
-      log.info(
-          "User created successfully with userId: {} for email: {}",
-          user.getUserId(),
-          user.getEmail());
+      log.info("evt=create_user_success userId={} email={}", user.getUserId(), user.getEmail());
       return user;
     } catch (Exception e) {
-      log.error("Failed to create user for email: {}", user.getEmail(), e);
+      log.error("evt=create_user_error email={}", user.getEmail(), e);
       throw UserException.databaseError("Failed to create user", e);
     }
   }
@@ -62,7 +58,7 @@ public class UserServiceImpl implements UserService {
 
   @Override
   public Optional<User> getUserByUsername(String username) {
-    log.debug("Searching for user by username: {}", username);
+    log.debug("evt=get_user_by_username_start username={}", username);
     try {
       // Use GSI for username lookup
       Map<String, AttributeValue> eav = new HashMap<>();
@@ -77,17 +73,17 @@ public class UserServiceImpl implements UserService {
 
       List<User> users = dynamoDBMapper.query(User.class, queryExpression);
       boolean found = !users.isEmpty();
-      log.debug("User search by username '{}' - Found: {}", username, found);
+      log.debug("evt=get_user_by_username_result username={} found={}", username, found);
       return found ? Optional.of(users.get(0)) : Optional.empty();
     } catch (Exception e) {
-      log.error("Error searching for user by username: {}", username, e);
+      log.error("evt=get_user_by_username_error username={}", username, e);
       return Optional.empty();
     }
   }
 
   @Override
   public Optional<User> getUserByEmail(String email) {
-    log.debug("Searching for user by email: {}", email);
+    log.debug("evt=get_user_by_email_start email={}", email);
     try {
       // Use GSI for email lookup
       Map<String, AttributeValue> eav = new HashMap<>();
@@ -102,10 +98,10 @@ public class UserServiceImpl implements UserService {
 
       List<User> users = dynamoDBMapper.query(User.class, queryExpression);
       boolean found = !users.isEmpty();
-      log.debug("User search by email '{}' - Found: {}", email, found);
+      log.debug("evt=get_user_by_email_result email={} found={}", email, found);
       return found ? Optional.of(users.get(0)) : Optional.empty();
     } catch (Exception e) {
-      log.error("Error searching for user by email: {}", email, e);
+      log.error("evt=get_user_by_email_error email={}", email, e);
       return Optional.empty();
     }
   }

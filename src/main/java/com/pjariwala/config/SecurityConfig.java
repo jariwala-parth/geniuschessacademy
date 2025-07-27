@@ -26,8 +26,16 @@ public class SecurityConfig {
                     .permitAll()
                     .requestMatchers("/actuator/**")
                     .permitAll()
+                    // Swagger UI endpoints
+                    .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/swagger-ui.html")
+                    .permitAll()
+                    // Protected endpoints - authorization handled in controllers
+                    .requestMatchers("/api/v1/batches/**")
+                    .authenticated()
+                    .requestMatchers("/api/v1/enrollments/**")
+                    .authenticated()
                     .anyRequest()
-                    .permitAll());
+                    .authenticated());
 
     return http.build();
   }

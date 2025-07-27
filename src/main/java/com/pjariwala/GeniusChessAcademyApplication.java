@@ -11,8 +11,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Import;
 
 @SpringBootApplication
-// We use direct @Import instead of @ComponentScan to speed up cold starts
-// @ComponentScan(basePackages = "com.pjariwala.controller")
 @Import({
   PingController.class,
   AuthController.class,
