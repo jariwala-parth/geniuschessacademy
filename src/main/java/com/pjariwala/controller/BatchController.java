@@ -6,6 +6,10 @@ import com.pjariwala.dto.PageResponseDTO;
 import com.pjariwala.model.Batch;
 import com.pjariwala.service.BatchService;
 import com.pjariwala.util.AuthUtil;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.Optional;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/batches")
 @CrossOrigin(origins = "*")
 @Slf4j
+@Tag(name = "Batch Management", description = "APIs for managing chess batches")
 public class BatchController {
 
   @Autowired private BatchService batchService;
@@ -34,9 +39,13 @@ public class BatchController {
   @Autowired private AuthUtil authUtil;
 
   @PostMapping
+  @Operation(
+      summary = "Create a new batch",
+      description = "Create a new chess batch. Only coaches can create batches.")
+  @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<BatchResponseDTO> createBatch(
       @RequestBody BatchRequestDTO batchRequest,
-      @RequestHeader("Authorization") String authorization) {
+      @Parameter(hidden = true) @RequestHeader("Authorization") String authorization) {
     log.info(
         "evt=create_batch_request batchName={} coachId={}",
         batchRequest.getBatchName(),

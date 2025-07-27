@@ -25,7 +25,11 @@ import org.springframework.context.annotation.Import;
   com.pjariwala.util.LocalTimeConverter.class,
   // Enrollment APIs
   com.pjariwala.controller.EnrollmentController.class,
-  com.pjariwala.service.impl.EnrollmentServiceImpl.class
+  com.pjariwala.service.impl.EnrollmentServiceImpl.class,
+  // Configuration
+  com.pjariwala.config.SwaggerConfig.class,
+  // Utils
+  com.pjariwala.util.AuthUtil.class
 })
 public class GeniusChessAcademyApplication {
 
