@@ -30,6 +30,7 @@ import com.pjariwala.dto.SignupRequest;
 import com.pjariwala.dto.UserInfo;
 import com.pjariwala.exception.AuthException;
 import com.pjariwala.model.User;
+import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.AuthService;
 import com.pjariwala.service.UserService;
 import jakarta.annotation.PostConstruct;
@@ -68,6 +69,7 @@ public class AuthServiceImpl implements AuthService {
   private String awsSecretKey;
 
   @Autowired private UserService userService;
+  @Autowired private ActivityLogService activityLogService;
 
   private AWSCognitoIdentityProvider cognitoClient;
 
@@ -409,6 +411,17 @@ public class AuthServiceImpl implements AuthService {
       response.setUserInfo(userInfo);
 
       log.info("Login process completed successfully for user: {}", authRequest.getLogin());
+
+      //      // Log successful login activity
+      //      try {
+      //        activityLogService.logLogin(
+      //            user.getUserId(),
+      //            user.getName(),
+      //            "COACH".equals(user.getUserType()) ? UserType.COACH : UserType.STUDENT);
+      //      } catch (Exception e) {
+      //        log.warn("Failed to log login activity for user: {}", user.getUserId(), e);
+      //      }
+
       return response;
 
     } catch (AuthException e) {
@@ -526,6 +539,19 @@ public class AuthServiceImpl implements AuthService {
 
       cognitoClient.globalSignOut(signOutRequest);
       log.info("evt=logout_success userId={}", userId);
+
+      //      // Log successful logout activity
+      //      try {
+      //        User user = userService.getUserById(userId).orElse(null);
+      //        if (user != null) {
+      //          activityLogService.logLogout(
+      //              userId,
+      //              user.getName(),
+      //              "COACH".equals(user.getUserType()) ? UserType.COACH : UserType.STUDENT);
+      //        }
+      //      } catch (Exception e) {
+      //        log.warn("Failed to log logout activity for user: {}", userId, e);
+      //      }
 
     } catch (AuthException e) {
       throw e;
@@ -698,6 +724,164 @@ public class AuthServiceImpl implements AuthService {
     } catch (Exception e) {
       log.error("evt=reset_password_system_error user={}", login, e);
       throw AuthException.cognitoError("System error during password reset", e);
+    }
+  }
+
+  @Override
+  public UserInfo addStudent(SignupRequest signupRequest, String coachId) {
+    log.info(
+        "Starting add student process for email: {} by coach: {}",
+        signupRequest.getEmail(),
+        coachId);
+    try {
+      // Force user type to STUDENT
+      signupRequest.setUserType("STUDENT");
+
+      // Validate input
+      validateSignupRequest(signupRequest);
+
+      // Validate student-specific fields
+      if (signupRequest.getGuardianName() == null
+          || signupRequest.getGuardianName().trim().isEmpty()) {
+        log.error(
+            "Add student validation failed: Guardian name is required for email: {}",
+            signupRequest.getEmail());
+        throw AuthException.validationError("Guardian name is required for students");
+      }
+
+      if (signupRequest.getGuardianPhone() == null
+          || signupRequest.getGuardianPhone().trim().isEmpty()) {
+        log.error(
+            "Add student validation failed: Guardian phone is required for email: {}",
+            signupRequest.getEmail());
+        throw AuthException.validationError("Guardian phone is required for students");
+      }
+
+      // Check if user already exists in our system
+      if (userService.userExistsByEmail(signupRequest.getEmail())) {
+        log.error(
+            "Add student failed: User already exists with email: {}", signupRequest.getEmail());
+        throw AuthException.userExists();
+      }
+
+      // Create user in Cognito User Pool
+      SignUpRequest cognitoSignupRequest =
+          new SignUpRequest()
+              .withClientId(clientId)
+              .withUsername(signupRequest.getUsername())
+              .withPassword(signupRequest.getPassword())
+              .withSecretHash(calculateSecretHash(signupRequest.getUsername()))
+              .withUserAttributes(
+                  new AttributeType().withName("email").withValue(signupRequest.getEmail()),
+                  new AttributeType().withName("name").withValue(signupRequest.getName()),
+                  new AttributeType()
+                      .withName("phone_number")
+                      .withValue(signupRequest.getPhoneNumber()),
+                  new AttributeType().withName("custom:user_type").withValue("STUDENT"),
+                  new AttributeType()
+                      .withName("custom:guardian_name")
+                      .withValue(signupRequest.getGuardianName()),
+                  new AttributeType()
+                      .withName("custom:guardian_phone")
+                      .withValue(signupRequest.getGuardianPhone()));
+
+      log.debug("Creating student in Cognito User Pool for email: {}", signupRequest.getEmail());
+      SignUpResult signUpResult = cognitoClient.signUp(cognitoSignupRequest);
+      log.info(
+          "Student created in Cognito successfully with sub: {} for email: {}",
+          signUpResult.getUserSub(),
+          signupRequest.getEmail());
+
+      // Auto-confirm the user
+      log.debug("Auto-confirming student in Cognito for email: {}", signupRequest.getEmail());
+      AdminConfirmSignUpRequest confirmRequest =
+          new AdminConfirmSignUpRequest()
+              .withUserPoolId(userPoolId)
+              .withUsername(signupRequest.getUsername());
+
+      cognitoClient.adminConfirmSignUp(confirmRequest);
+      log.info("Student auto-confirmed in Cognito for email: {}", signupRequest.getEmail());
+
+      // Create user record in our system
+      User user = new User();
+      user.setUserId(userService.generateUserId());
+      user.setUserType("STUDENT");
+      user.setEmail(signupRequest.getEmail());
+      user.setName(signupRequest.getName());
+      user.setPhoneNumber(signupRequest.getPhoneNumber());
+      user.setUsername(signupRequest.getUsername());
+      user.setCognitoSub(signUpResult.getUserSub());
+      user.setIsActive(true);
+      user.setCreatedAt(LocalDateTime.now());
+      user.setUpdatedAt(LocalDateTime.now());
+      user.setGuardianName(signupRequest.getGuardianName());
+      user.setGuardianPhone(signupRequest.getGuardianPhone());
+      user.setJoiningDate(LocalDateTime.now());
+
+      log.debug("Creating student record in our system for email: {}", signupRequest.getEmail());
+      userService.createUser(user);
+      log.info(
+          "Student record created successfully in our system with userId: {} for email: {} by"
+              + " coach: {}",
+          user.getUserId(),
+          signupRequest.getEmail(),
+          coachId);
+
+      // Return student info (no auto-login for student creation)
+      UserInfo studentInfo = new UserInfo();
+      studentInfo.setUserId(user.getUserId());
+      studentInfo.setEmail(user.getEmail());
+      studentInfo.setName(user.getName());
+      studentInfo.setUserType(user.getUserType());
+      studentInfo.setPhoneNumber(user.getPhoneNumber());
+
+      log.info(
+          "Add student process completed successfully for email: {} by coach: {}",
+          signupRequest.getEmail(),
+          coachId);
+
+      // Log student creation activity
+      try {
+        User coach = userService.getUserById(coachId).orElse(null);
+        if (coach != null) {
+          activityLogService.logStudentCreation(
+              coachId, coach.getName(), user.getUserId(), user.getName());
+        }
+      } catch (Exception e) {
+        log.warn("Failed to log student creation activity for student: {}", user.getUserId(), e);
+      }
+
+      return studentInfo;
+
+    } catch (AuthException e) {
+      log.error(
+          "evt=add_student_auth_error email={} coach={} code={} msg={}",
+          signupRequest.getEmail(),
+          coachId,
+          e.getErrorCode(),
+          e.getMessage());
+      throw e;
+    } catch (UsernameExistsException e) {
+      log.error(
+          "evt=add_student_username_exists email={} coach={} msg=username_already_exists",
+          signupRequest.getEmail(),
+          coachId,
+          e);
+      throw AuthException.userExists();
+    } catch (InvalidPasswordException e) {
+      log.error(
+          "evt=add_student_invalid_password email={} coach={} msg=password_requirements_not_met",
+          signupRequest.getEmail(),
+          coachId,
+          e);
+      throw AuthException.invalidPassword("Password does not meet requirements");
+    } catch (Exception e) {
+      log.error(
+          "evt=add_student_system_error email={} coach={} msg=unexpected_system_error",
+          signupRequest.getEmail(),
+          coachId,
+          e);
+      throw AuthException.cognitoError("System error during student creation", e);
     }
   }
 }

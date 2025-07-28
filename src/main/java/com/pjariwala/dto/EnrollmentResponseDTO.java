@@ -1,5 +1,6 @@
 package com.pjariwala.dto;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import com.pjariwala.model.Enrollment;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -13,12 +14,19 @@ import lombok.NoArgsConstructor;
 public class EnrollmentResponseDTO {
   private String batchId;
   private String studentId;
+
+  @JsonFormat(pattern = "yyyy-MM-dd")
   private LocalDate enrollmentDate;
+
   private Enrollment.EnrollmentStatus enrollmentStatus;
   private Enrollment.PaymentStatus enrollmentPaymentStatus;
   private Double currentPaymentAmount;
   private String notes;
+
+  @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
   private LocalDateTime createdAt;
+
+  @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
   private LocalDateTime updatedAt;
 
   // Additional fields for enriched responses

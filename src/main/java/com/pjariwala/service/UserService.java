@@ -1,15 +1,18 @@
 package com.pjariwala.service;
 
+import com.pjariwala.dto.PageResponseDTO;
+import com.pjariwala.dto.UserInfo;
 import com.pjariwala.model.User;
 import java.util.List;
 import java.util.Optional;
 
 public interface UserService {
 
-  /** Create a new user */
   User createUser(User user);
 
-  /** Get user by ID */
+  User getUserById(String userId, String userType);
+
+  /** Get user by ID (tries both COACH and STUDENT types) */
   Optional<User> getUserById(String userId);
 
   /** Get user by username */
@@ -24,14 +27,28 @@ public interface UserService {
   /** Get user by Cognito sub */
   Optional<User> getUserByCognitoSub(String cognitoSub);
 
-  /** Get all users by type */
   List<User> getUsersByType(String userType);
 
-  /** Update user */
+  /**
+   * Get users by type with search and pagination support
+   *
+   * @param userType The type of users to retrieve (STUDENT, COACH)
+   * @param searchTerm Optional search term to filter by name, email, or phone
+   * @param page Page number (0-based)
+   * @param size Page size
+   * @return Paginated list of users matching criteria
+   */
+  PageResponseDTO<UserInfo> getUsersByTypeWithSearch(
+      String userType, String searchTerm, int page, int size);
+
   User updateUser(User user);
 
-  /** Delete user */
+  void deleteUser(String userId, String userType);
+
+  /** Delete user by ID (tries both types) */
   void deleteUser(String userId);
+
+  boolean userExists(String userId, String userType);
 
   /** Check if user exists by email */
   boolean userExistsByEmail(String email);

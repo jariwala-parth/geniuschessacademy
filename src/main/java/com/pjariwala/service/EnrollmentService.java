@@ -3,6 +3,7 @@ package com.pjariwala.service;
 import com.pjariwala.dto.EnrollmentRequestDTO;
 import com.pjariwala.dto.EnrollmentResponseDTO;
 import com.pjariwala.dto.PageResponseDTO;
+import java.util.List;
 import java.util.Optional;
 
 public interface EnrollmentService {
@@ -10,6 +11,10 @@ public interface EnrollmentService {
   /** Create a new enrollment - only coaches can enroll students */
   EnrollmentResponseDTO createEnrollment(
       EnrollmentRequestDTO enrollmentRequest, String requestingUserId);
+
+  /** Create multiple enrollments in bulk - only coaches can enroll students */
+  List<EnrollmentResponseDTO> createBulkEnrollments(
+      List<EnrollmentRequestDTO> enrollmentRequests, String requestingUserId);
 
   /** Get enrollment by batchId and studentId */
   Optional<EnrollmentResponseDTO> getEnrollment(

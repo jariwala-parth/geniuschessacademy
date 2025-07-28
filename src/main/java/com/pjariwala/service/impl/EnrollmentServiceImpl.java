@@ -9,11 +9,15 @@ import com.amazonaws.services.dynamodbv2.model.AttributeValue;
 import com.pjariwala.dto.EnrollmentRequestDTO;
 import com.pjariwala.dto.EnrollmentResponseDTO;
 import com.pjariwala.dto.PageResponseDTO;
+import com.pjariwala.enums.ActionType;
+import com.pjariwala.enums.EntityType;
+import com.pjariwala.enums.UserType;
 import com.pjariwala.exception.AuthException;
 import com.pjariwala.exception.UserException;
 import com.pjariwala.model.Batch;
 import com.pjariwala.model.Enrollment;
 import com.pjariwala.model.User;
+import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.EnrollmentService;
 import com.pjariwala.service.UserService;
 import java.time.LocalDateTime;
@@ -33,6 +37,7 @@ public class EnrollmentServiceImpl implements EnrollmentService {
 
   @Autowired private DynamoDBMapper dynamoDBMapper;
   @Autowired private UserService userService;
+  @Autowired private ActivityLogService activityLogService;
 
   @Override
   public EnrollmentResponseDTO createEnrollment(
@@ -88,6 +93,24 @@ public class EnrollmentServiceImpl implements EnrollmentService {
           "evt=create_enrollment_success batchId={} studentId={}",
           enrollment.getBatchId(),
           enrollment.getStudentId());
+
+      // Log enrollment activity
+      try {
+        User coach = getUser(requestingUserId);
+        User student = getUser(enrollment.getStudentId());
+        activityLogService.logEnrollment(
+            coach.getUserId(), coach.getName(),
+            student.getUserId(), student.getName(),
+            enrollment.getBatchId(), "Batch" // We'll get the actual batch name if needed
+            );
+      } catch (Exception e) {
+        log.warn(
+            "Failed to log enrollment activity for batch: {} student: {}",
+            enrollment.getBatchId(),
+            enrollment.getStudentId(),
+            e);
+      }
+
       return convertToResponseDTO(enrollment);
     } catch (Exception e) {
       log.error("evt=create_enrollment_error", e);
@@ -276,6 +299,28 @@ public class EnrollmentServiceImpl implements EnrollmentService {
 
       dynamoDBMapper.delete(existingEnrollment);
       log.info("evt=delete_enrollment_success batchId={} studentId={}", batchId, studentId);
+
+      // Log enrollment removal activity
+      try {
+        User coach = getUser(requestingUserId);
+        User student = getUser(studentId);
+        activityLogService.logAction(
+            ActionType.REMOVE_ENROLLMENT,
+            coach.getUserId(),
+            coach.getName(),
+            UserType.COACH,
+            String.format("Removed %s from batch", student.getName()),
+            EntityType.ENROLLMENT,
+            batchId + ":" + studentId,
+            String.format("%s -> Batch", student.getName()));
+      } catch (Exception e) {
+        log.warn(
+            "Failed to log enrollment removal activity for batch: {} student: {}",
+            batchId,
+            studentId,
+            e);
+      }
+
       return true;
     } catch (Exception e) {
       log.error("evt=delete_enrollment_error batchId={} studentId={}", batchId, studentId, e);
@@ -382,6 +427,110 @@ public class EnrollmentServiceImpl implements EnrollmentService {
       log.error("evt=get_enrollments_by_student_error studentId={}", studentId, e);
       throw UserException.databaseError("Failed to retrieve enrollments by student", e);
     }
+  }
+
+  @Override
+  public List<EnrollmentResponseDTO> createBulkEnrollments(
+      List<EnrollmentRequestDTO> enrollmentRequests, String requestingUserId) {
+    log.info(
+        "evt=create_bulk_enrollments_start count={} requestingUserId={}",
+        enrollmentRequests.size(),
+        requestingUserId);
+
+    // Authorization: Only coaches can enroll students
+    requireCoachPermission(requestingUserId);
+
+    List<EnrollmentResponseDTO> results = new ArrayList<>();
+    List<String> errors = new ArrayList<>();
+
+    for (EnrollmentRequestDTO request : enrollmentRequests) {
+      try {
+        // Validate each request
+        validateEnrollmentRequest(request);
+
+        // Check if enrollment already exists
+        if (isStudentEnrolled(request.getBatchId(), request.getStudentId())) {
+          errors.add(
+              String.format(
+                  "Student %s already enrolled in batch %s",
+                  request.getStudentId(), request.getBatchId()));
+          continue;
+        }
+
+        // Verify batch and student exist
+        validateBatchAndStudent(request.getBatchId(), request.getStudentId());
+
+        Enrollment enrollment =
+            Enrollment.builder()
+                .batchId(request.getBatchId())
+                .studentId(request.getStudentId())
+                .enrollmentDate(
+                    request.getEnrollmentDate() != null
+                        ? request.getEnrollmentDate()
+                        : java.time.LocalDate.now())
+                .enrollmentStatus(
+                    request.getEnrollmentStatus() != null
+                        ? request.getEnrollmentStatus()
+                        : Enrollment.EnrollmentStatus.ENROLLED)
+                .enrollmentPaymentStatus(
+                    request.getEnrollmentPaymentStatus() != null
+                        ? request.getEnrollmentPaymentStatus()
+                        : Enrollment.PaymentStatus.PENDING)
+                .currentPaymentAmount(request.getCurrentPaymentAmount())
+                .notes(request.getNotes())
+                .createdAt(LocalDateTime.now())
+                .updatedAt(LocalDateTime.now())
+                .build();
+
+        dynamoDBMapper.save(enrollment);
+        results.add(convertToResponseDTO(enrollment));
+
+        log.info(
+            "evt=bulk_enrollment_success batchId={} studentId={}",
+            enrollment.getBatchId(),
+            enrollment.getStudentId());
+
+      } catch (Exception e) {
+        log.error(
+            "evt=bulk_enrollment_error batchId={} studentId={}",
+            request.getBatchId(),
+            request.getStudentId(),
+            e);
+        errors.add(
+            String.format(
+                "Failed to enroll student %s in batch %s: %s",
+                request.getStudentId(), request.getBatchId(), e.getMessage()));
+      }
+    }
+
+    log.info(
+        "evt=create_bulk_enrollments_complete successful={} failed={}",
+        results.size(),
+        errors.size());
+
+    // Log bulk enrollment activity
+    try {
+      User coach = getUser(requestingUserId);
+      activityLogService.logAction(
+          ActionType.BULK_ENROLLMENT,
+          coach.getUserId(),
+          coach.getName(),
+          UserType.COACH,
+          String.format("Bulk enrolled %d students", results.size()),
+          EntityType.ENROLLMENT,
+          null,
+          null);
+    } catch (Exception e) {
+      log.warn("Failed to log bulk enrollment activity for coach: {}", requestingUserId, e);
+    }
+
+    if (!errors.isEmpty()) {
+      log.warn("evt=create_bulk_enrollments_partial_failure errors={}", String.join("; ", errors));
+      // For bulk operations, we return partial success rather than throwing
+      // The caller can check the result count vs request count
+    }
+
+    return results;
   }
 
   public boolean isStudentEnrolled(String batchId, String studentId) {
@@ -496,13 +645,16 @@ public class EnrollmentServiceImpl implements EnrollmentService {
 
   /** Get user by ID and throw exception if not found */
   private User getUser(String userId) {
-    return userService
-        .getUserById(userId)
-        .orElseThrow(
-            () -> {
-              log.error("evt=get_user_error userId={} msg=user_not_found", userId);
-              return AuthException.invalidToken();
-            });
+    // Try both COACH and STUDENT types since we don't know which type the user is
+    User user = userService.getUserById(userId, "COACH");
+    if (user == null) {
+      user = userService.getUserById(userId, "STUDENT");
+    }
+    if (user == null) {
+      log.error("evt=get_user_error userId={} msg=user_not_found", userId);
+      throw AuthException.invalidToken();
+    }
+    return user;
   }
 
   /** Require that the requesting user is a coach */

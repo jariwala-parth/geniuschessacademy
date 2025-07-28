@@ -8,6 +8,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import java.util.List;
 import java.util.Optional;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -64,6 +65,36 @@ public class EnrollmentController {
           enrollmentRequest.getStudentId(),
           e);
       throw e;
+    }
+  }
+
+  @PostMapping("/bulk")
+  @Operation(
+      summary = "Enroll multiple students in batches",
+      description = "Create multiple enrollments in one request. Only coaches can enroll students.")
+  @SecurityRequirement(name = "bearerAuth")
+  public ResponseEntity<List<EnrollmentResponseDTO>> createBulkEnrollments(
+      @Parameter(hidden = true) @RequestAttribute("userId") String requestingUserId,
+      @RequestBody List<EnrollmentRequestDTO> enrollmentRequests) {
+
+    log.info(
+        "evt=create_bulk_enrollments_request userId={} count={}",
+        requestingUserId,
+        enrollmentRequests.size());
+
+    try {
+      List<EnrollmentResponseDTO> results =
+          enrollmentService.createBulkEnrollments(enrollmentRequests, requestingUserId);
+
+      log.info(
+          "evt=create_bulk_enrollments_response successful={} total_requested={}",
+          results.size(),
+          enrollmentRequests.size());
+
+      return ResponseEntity.ok(results);
+    } catch (Exception e) {
+      log.error("evt=create_bulk_enrollments_error userId={}", requestingUserId, e);
+      return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
     }
   }
 

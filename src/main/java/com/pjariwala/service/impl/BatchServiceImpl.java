@@ -8,10 +8,14 @@ import com.amazonaws.services.dynamodbv2.model.AttributeValue;
 import com.pjariwala.dto.BatchRequestDTO;
 import com.pjariwala.dto.BatchResponseDTO;
 import com.pjariwala.dto.PageResponseDTO;
+import com.pjariwala.enums.ActionType;
+import com.pjariwala.enums.EntityType;
+import com.pjariwala.enums.UserType;
 import com.pjariwala.exception.AuthException;
 import com.pjariwala.exception.UserException;
 import com.pjariwala.model.Batch;
 import com.pjariwala.model.User;
+import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.BatchService;
 import com.pjariwala.service.UserService;
 import java.time.LocalDateTime;
@@ -31,6 +35,8 @@ import org.springframework.stereotype.Service;
 public class BatchServiceImpl implements BatchService {
 
   @Autowired private DynamoDBMapper dynamoDBMapper;
+
+  @Autowired private ActivityLogService activityLogService;
   @Autowired private UserService userService;
 
   @Override
@@ -72,6 +78,16 @@ public class BatchServiceImpl implements BatchService {
     try {
       dynamoDBMapper.save(batch);
       log.info("evt=create_batch_success batchId={}", batch.getBatchId());
+
+      // Log batch creation activity
+      try {
+        User coach = getUser(batchRequest.getCoachId());
+        activityLogService.logBatchCreation(
+            coach.getUserId(), coach.getName(), batch.getBatchId(), batch.getBatchName());
+      } catch (Exception e) {
+        log.warn("Failed to log batch creation activity for batch: {}", batch.getBatchId(), e);
+      }
+
       return convertToResponseDTO(batch);
     } catch (Exception e) {
       log.error("evt=create_batch_error batchName={}", batchRequest.getBatchName(), e);
@@ -211,6 +227,23 @@ public class BatchServiceImpl implements BatchService {
       dynamoDBMapper.save(existingBatch);
 
       log.info("evt=update_batch_success batchId={}", batchId);
+
+      // Log batch update activity
+      try {
+        User coach = getUser(requestingUserId);
+        activityLogService.logAction(
+            ActionType.UPDATE_BATCH,
+            coach.getUserId(),
+            coach.getName(),
+            UserType.COACH,
+            String.format("Updated batch: %s", existingBatch.getBatchName()),
+            EntityType.BATCH,
+            existingBatch.getBatchId(),
+            existingBatch.getBatchName());
+      } catch (Exception e) {
+        log.warn("Failed to log batch update activity for batch: {}", batchId, e);
+      }
+
       return Optional.of(convertToResponseDTO(existingBatch));
     } catch (Exception e) {
       log.error("evt=update_batch_error batchId={}", batchId, e);
@@ -238,6 +271,23 @@ public class BatchServiceImpl implements BatchService {
       dynamoDBMapper.save(existingBatch);
 
       log.info("evt=delete_batch_success batchId={}", batchId);
+
+      // Log batch deletion activity
+      try {
+        User coach = getUser(requestingUserId);
+        activityLogService.logAction(
+            ActionType.DELETE_BATCH,
+            coach.getUserId(),
+            coach.getName(),
+            UserType.COACH,
+            String.format("Deleted batch: %s", existingBatch.getBatchName()),
+            EntityType.BATCH,
+            existingBatch.getBatchId(),
+            existingBatch.getBatchName());
+      } catch (Exception e) {
+        log.warn("Failed to log batch deletion activity for batch: {}", batchId, e);
+      }
+
       return true;
     } catch (Exception e) {
       log.error("evt=delete_batch_error batchId={}", batchId, e);

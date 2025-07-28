@@ -12,7 +12,7 @@ This document provides comprehensive API documentation for the Genius Chess Acad
 
 ## Authentication
 
-All protected endpoints require JWT authentication. Obtain a token by logging in and include it in the `Authorization` header.
+Protected endpoints require JWT authentication. Obtain a token by logging in and include it in the `Authorization` header.
 
 ### Format
 ```
@@ -50,7 +50,9 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 
 ### 🔐 Authentication APIs
 
-#### 1. User Registration (Coach)
+#### 1. User Registration (Public - Coach Signup)
+**Note:** This endpoint is public and intended for initial coach registration only.
+
 ```bash
 curl -X POST http://localhost:8080/api/v1/auth/signup \
   -H "Content-Type: application/json" \
@@ -65,20 +67,33 @@ curl -X POST http://localhost:8080/api/v1/auth/signup \
   }'
 ```
 
-#### 2. User Registration (Student)
+#### 2. Add Student (Coach Only - Authentication Required)
+**Authorization Required:** Only authenticated coaches can add students.
+
 ```bash
-curl -X POST http://localhost:8080/api/v1/auth/signup \
+curl -X POST http://localhost:8080/api/v1/auth/add-student \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -d '{
     "username": "alice_student",
     "email": "student@example.com",
     "password": "SecurePass123!",
     "name": "Alice Smith",
     "phoneNumber": "+1234567890",
-    "userType": "STUDENT",
     "guardianName": "Bob Smith",
     "guardianPhone": "+1234567891"
   }'
+```
+
+**Response:**
+```json
+{
+  "userId": "USER_student123",
+  "email": "student@example.com",
+  "name": "Alice Smith",
+  "userType": "STUDENT",
+  "phoneNumber": "+1234567890"
+}
 ```
 
 #### 3. Login
@@ -210,11 +225,109 @@ curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
 
 ---
 
+### 👥 User Management APIs
+
+> **Authorization Required**: Only coaches can access user management endpoints.
+
+#### 1. Get All Students (with Search & Pagination)
+```bash
+# Get first page (100 students)
+curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  "http://localhost:8080/api/v1/users/students"
+
+# Search students
+curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  "http://localhost:8080/api/v1/users/students?search=alice&page=0&size=50"
+
+# Get specific page
+curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  "http://localhost:8080/api/v1/users/students?page=1&size=100"
+```
+
+**Response:**
+```json
+{
+  "content": [
+    {
+      "userId": "USER_student123",
+      "email": "alice@example.com",
+      "name": "Alice Smith",
+      "userType": "STUDENT",
+      "phoneNumber": "+1234567890"
+    }
+  ],
+  "pageInfo": {
+    "currentPage": 0,
+    "pageSize": 100,
+    "totalPages": 2,
+    "totalElements": 150
+  }
+}
+```
+
+#### 2. Get All Coaches (with Search & Pagination)
+```bash
+curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  "http://localhost:8080/api/v1/users/coaches?search=john&page=0&size=50"
+```
+
+**Response:** Same format as students endpoint.
+
+---
+
 ### 👥 Enrollment Management APIs
 
-> **Authorization Required**: Only coaches can create and manage enrollments. Students can view their own enrollments.
+> **Authorization Required**: Only coaches can access enrollment endpoints.
 
-#### 1. Enroll Student in Batch
+#### 1. Bulk Enroll Students
+```bash
+curl -X POST http://localhost:8080/api/v1/enrollments/bulk \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -d '[
+    {
+      "batchId": "BATCH_12345",
+      "studentId": "USER_student123",
+      "enrollmentStatus": "ENROLLED",
+      "enrollmentPaymentStatus": "PENDING",
+      "currentPaymentAmount": 1500,
+      "enrollmentDate": "2025-01-15",
+      "notes": "Bulk enrollment"
+    },
+    {
+      "batchId": "BATCH_12345", 
+      "studentId": "USER_student456",
+      "enrollmentStatus": "ENROLLED",
+      "enrollmentPaymentStatus": "PENDING",
+      "currentPaymentAmount": 1500,
+      "enrollmentDate": "2025-01-15",
+      "notes": "Bulk enrollment"
+    }
+  ]'
+```
+
+**Response:**
+```json
+[
+  {
+    "batchId": "BATCH_12345",
+    "studentId": "USER_student123",
+    "enrollmentDate": "2025-01-15",
+    "enrollmentStatus": "ENROLLED",
+    "enrollmentPaymentStatus": "PENDING",
+    "currentPaymentAmount": 1500,
+    "notes": "Bulk enrollment",
+    "createdAt": "2025-01-15T10:30:00",
+    "updatedAt": "2025-01-15T10:30:00",
+    "batchName": "Monday 6:30 PM",
+    "studentName": "Alice Smith"
+  }
+]
+```
+
+**Note**: Returns only successful enrollments. If some enrollments fail (e.g., student already enrolled), they are skipped and logged.
+
+#### 2. Individual Enrollment
 ```bash
 curl -X POST http://localhost:8080/api/v1/enrollments \
   -H "Content-Type: application/json" \
@@ -230,13 +343,13 @@ curl -X POST http://localhost:8080/api/v1/enrollments \
   }'
 ```
 
-#### 2. Get Specific Enrollment
+#### 3. Get Specific Enrollment
 ```bash
 curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   "http://localhost:8080/api/v1/enrollments/BATCH_12345abcd/USER_student123"
 ```
 
-#### 3. Get All Enrollments
+#### 4. Get All Enrollments
 ```bash
 # Basic request
 curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
@@ -247,19 +360,19 @@ curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   "http://localhost:8080/api/v1/enrollments?enrollmentStatus=ENROLLED&paymentStatus=PENDING&page=0&size=10"
 ```
 
-#### 4. Get Students in a Batch
+#### 5. Get Students in a Batch
 ```bash
 curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   "http://localhost:8080/api/v1/enrollments/batch/BATCH_12345abcd?page=0&size=10"
 ```
 
-#### 5. Get Student's Enrollments
+#### 6. Get Student's Enrollments
 ```bash
 curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   "http://localhost:8080/api/v1/enrollments/student/USER_student123?page=0&size=10"
 ```
 
-#### 6. Update Enrollment
+#### 7. Update Enrollment
 ```bash
 curl -X PUT http://localhost:8080/api/v1/enrollments/BATCH_12345abcd/USER_student123 \
   -H "Content-Type: application/json" \
@@ -272,25 +385,25 @@ curl -X PUT http://localhost:8080/api/v1/enrollments/BATCH_12345abcd/USER_studen
   }'
 ```
 
-#### 7. Update Payment Status
+#### 8. Update Payment Status
 ```bash
 curl -X PATCH "http://localhost:8080/api/v1/enrollments/BATCH_12345abcd/USER_student123/payment?paymentStatus=PAID&paymentAmount=1500.0" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 
-#### 8. Unenroll Student
+#### 9. Unenroll Student
 ```bash
 curl -X DELETE http://localhost:8080/api/v1/enrollments/BATCH_12345abcd/USER_student123 \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 
-#### 9. Get Enrollments by Payment Status
+#### 10. Get Enrollments by Payment Status
 ```bash
 curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   "http://localhost:8080/api/v1/enrollments/payment-status/OVERDUE?page=0&size=10"
 ```
 
-#### 10. Alternative RESTful Endpoints
+#### 11. Alternative RESTful Endpoints
 ```bash
 # Get batch enrollments (alternative route)
 curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
@@ -366,6 +479,8 @@ curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
 
 ### Coach Permissions
 - ✅ Create, update, delete batches
+- ✅ Add new students (`/api/v1/auth/add-student`)
+- ✅ Get all students and coaches (`/api/v1/users/students`, `/api/v1/users/coaches`)
 - ✅ Enroll/unenroll students
 - ✅ View all enrollments and batches
 - ✅ Update payment statuses
@@ -377,6 +492,13 @@ curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
 - ❌ Cannot create or modify batches
 - ❌ Cannot enroll/unenroll themselves or others
 - ❌ Cannot access other students' data
+- ❌ Cannot add new students
+- ❌ Cannot access user management endpoints
+
+### Public Access
+- ✅ Login (`/api/v1/auth/login`)
+- ✅ Initial signup (`/api/v1/auth/signup`) - intended for coach registration
+- ✅ Password reset endpoints
 
 ---
 
@@ -427,35 +549,108 @@ For interactive API testing, visit `http://localhost:8080/swagger-ui.html` when 
 
 ## 📋 Common Use Cases
 
-### 1. Complete Batch Creation Flow
+### 1. Complete Coach Setup Flow
 ```bash
-# 1. Login as coach
+# 1. Register as coach (public)
+curl -X POST http://localhost:8080/api/v1/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{"username":"coach_john","email":"coach@example.com","password":"SecurePass123!","name":"John Doe","phoneNumber":"+1234567890","userType":"COACH","isAdmin":true}'
+
+# 2. Login to get token
 TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"login":"coach@example.com","password":"YourPassword123!","userType":"COACH"}' \
+  -d '{"login":"coach@example.com","password":"SecurePass123!","userType":"COACH"}' \
   | jq -r '.accessToken')
 
-# 2. Create batch
+# 3. Add a student
+curl -X POST http://localhost:8080/api/v1/auth/add-student \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"username":"alice_student","email":"alice@example.com","password":"StudentPass123!","name":"Alice Smith","phoneNumber":"+1234567890","guardianName":"Bob Smith","guardianPhone":"+1234567891"}'
+
+# 4. Get all students
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/v1/users/students"
+```
+
+### 2. Student Management & Enrollment Flow
+```bash
+# 1. Get students with search (paginated)
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/v1/users/students?search=alice&page=0&size=100"
+
+# 2. Get students for a specific batch (to see who's already enrolled)
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/v1/enrollments/batch/BATCH_12345"
+
+# 3. Bulk enroll multiple students
+curl -X POST http://localhost:8080/api/v1/enrollments/bulk \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '[
+    {
+      "batchId": "BATCH_12345",
+      "studentId": "USER_student123", 
+      "enrollmentStatus": "ENROLLED",
+      "enrollmentPaymentStatus": "PENDING",
+      "currentPaymentAmount": 1500
+    },
+    {
+      "batchId": "BATCH_12345",
+      "studentId": "USER_student456",
+      "enrollmentStatus": "ENROLLED", 
+      "enrollmentPaymentStatus": "PENDING",
+      "currentPaymentAmount": 1500
+    }
+  ]'
+```
+
+### 3. Smart Search Workflow (Frontend Integration)
+```bash
+# Step 1: Check total students count
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/v1/users/students?page=0&size=100"
+
+# If totalElements <= 100: Load all and search locally in frontend
+# If totalElements > 100: Use backend search for real-time results
+
+# Step 2: Backend search (when needed)
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/v1/users/students?search=john&page=0&size=100"
+
+# Step 3: Load more pages as needed
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/v1/users/students?search=john&page=1&size=100"
+```
+
+### 4. Batch Management Flow
+```bash
+# 1. Create a batch
 curl -X POST http://localhost:8080/api/v1/batches \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"batchName":"Test Batch","batchSize":10,"startDate":"2025-02-01","endDate":"2025-04-30","batchTiming":{"daysOfWeek":["MONDAY"],"startTime":"18:00","endTime":"19:00"},"paymentType":"MONTHLY","monthlyFee":1500,"occurrenceType":"REGULAR","coachId":"USER_coach123"}'
-```
+  -d '{"batchName":"Beginner Chess","batchSize":10,"startDate":"2025-02-01","endDate":"2025-04-30","batchTiming":{"daysOfWeek":["MONDAY"],"startTime":"18:00","endTime":"19:00"},"paymentType":"MONTHLY","monthlyFee":1500,"occurrenceType":"REGULAR","coachId":"USER_coach123"}'
 
-### 2. Student Enrollment Flow
-```bash
-# 1. Enroll student
-curl -X POST http://localhost:8080/api/v1/enrollments \
+# 2. Get all batches
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/v1/batches"
+
+# 3. Get specific batch by ID
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/v1/batches/BATCH_12345abcd"
+
+# 4. Update batch
+curl -X PUT http://localhost:8080/api/v1/batches/BATCH_12345abcd \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"batchId":"BATCH_12345","studentId":"USER_student123","enrollmentStatus":"ENROLLED","enrollmentPaymentStatus":"PENDING"}'
+  -d '{"batchName":"Beginner Chess (Updated)","batchSize":15,"startDate":"2025-02-01","endDate":"2025-05-31","batchTiming":{"daysOfWeek":["MONDAY","WEDNESDAY","FRIDAY"],"startTime":"18:00","endTime":"19:30"},"paymentType":"MONTHLY","monthlyFee":1600,"occurrenceType":"REGULAR","batchStatus":"ACTIVE","notes":"Updated curriculum with advanced tactics","coachId":"USER_coach123"}'
 
-# 2. Update payment status
-curl -X PATCH "http://localhost:8080/api/v1/enrollments/BATCH_12345/USER_student123/payment?paymentStatus=PAID&paymentAmount=1500" \
+# 5. Delete batch
+curl -X DELETE http://localhost:8080/api/v1/batches/BATCH_12345abcd \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-### 3. Payment Tracking
+### 5. Payment Tracking
 ```bash
 # Get all overdue payments
 curl -H "Authorization: Bearer $TOKEN" \
@@ -470,7 +665,10 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ## 🛠️ Development Notes
 
-- All endpoints support CORS for frontend integration
+- `/api/v1/auth/signup` is public for initial coach registration
+- `/api/v1/auth/add-student` requires coach authentication for adding students
+- `/api/v1/users/students` and `/api/v1/users/coaches` require coach authentication
+- All other protected endpoints support CORS for frontend integration
 - JWT tokens expire in 1 hour by default
 - Use refresh tokens for extended sessions
 - All dates use ISO format (YYYY-MM-DD)

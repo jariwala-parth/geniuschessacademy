@@ -3,6 +3,8 @@ package com.pjariwala.controller;
 import com.pjariwala.dto.AuthRequest;
 import com.pjariwala.dto.AuthResponse;
 import com.pjariwala.dto.SignupRequest;
+import com.pjariwala.dto.UserInfo;
+import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.AuthService;
 import com.pjariwala.util.AuthUtil;
 import io.swagger.v3.oas.annotations.Operation;
@@ -30,8 +32,14 @@ public class AuthController {
 
   @Autowired private AuthService authService;
   @Autowired private AuthUtil authUtil;
+  @Autowired private ActivityLogService activityLogService;
 
   @PostMapping("/signup")
+  @Operation(
+      summary = "User registration",
+      description =
+          "Register a new user (coach or student). No authentication required for initial coach"
+              + " signup.")
   public ResponseEntity<AuthResponse> signup(@RequestBody SignupRequest signupRequest) {
     log.info(
         "Received signup request for email: {} with userType: {}",
@@ -40,6 +48,36 @@ public class AuthController {
     AuthResponse response = authService.signup(signupRequest);
     log.info("Signup completed successfully for email: {}", signupRequest.getEmail());
     return ResponseEntity.status(HttpStatus.CREATED).body(response);
+  }
+
+  @PostMapping("/add-student")
+  @Operation(
+      summary = "Add new student",
+      description = "Allows coaches to register new students. Requires coach authentication.")
+  @SecurityRequirement(name = "bearerAuth")
+  public ResponseEntity<UserInfo> addStudent(
+      @Parameter(hidden = true) @RequestAttribute("userId") String coachId,
+      @Parameter(hidden = true) @RequestAttribute("userType") String userType,
+      @RequestBody SignupRequest signupRequest) {
+
+    log.info(
+        "Received add-student request from coach: {} for email: {}",
+        coachId,
+        signupRequest.getEmail());
+
+    // Validate that the requesting user is a coach
+    if (!"COACH".equals(userType)) {
+      log.error("Non-coach user {} attempted to add student", coachId);
+      return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+    }
+
+    // Force the user type to be STUDENT regardless of what's in the request
+    signupRequest.setUserType("STUDENT");
+
+    UserInfo studentInfo = authService.addStudent(signupRequest, coachId);
+    log.info(
+        "Student added successfully by coach: {} for email: {}", coachId, signupRequest.getEmail());
+    return ResponseEntity.status(HttpStatus.CREATED).body(studentInfo);
   }
 
   @PostMapping("/login")
