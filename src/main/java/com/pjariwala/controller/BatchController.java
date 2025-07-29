@@ -3,7 +3,8 @@ package com.pjariwala.controller;
 import com.pjariwala.dto.BatchRequestDTO;
 import com.pjariwala.dto.BatchResponseDTO;
 import com.pjariwala.dto.PageResponseDTO;
-import com.pjariwala.model.Batch;
+import com.pjariwala.enums.BatchStatus;
+import com.pjariwala.enums.PaymentType;
 import com.pjariwala.service.BatchService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -79,19 +80,19 @@ public class BatchController {
         coachId,
         userId);
     try {
-      Optional<Batch.BatchStatus> statusEnum = Optional.empty();
+      Optional<BatchStatus> statusEnum = Optional.empty();
       if (status != null) {
         try {
-          statusEnum = Optional.of(Batch.BatchStatus.valueOf(status.toUpperCase()));
+          statusEnum = Optional.of(BatchStatus.valueOf(status.toUpperCase()));
         } catch (IllegalArgumentException e) {
           log.warn("evt=get_all_batches_request invalid_status status={}", status);
         }
       }
 
-      Optional<Batch.PaymentType> paymentTypeEnum = Optional.empty();
+      Optional<PaymentType> paymentTypeEnum = Optional.empty();
       if (paymentType != null) {
         try {
-          paymentTypeEnum = Optional.of(Batch.PaymentType.valueOf(paymentType.toUpperCase()));
+          paymentTypeEnum = Optional.of(PaymentType.valueOf(paymentType.toUpperCase()));
         } catch (IllegalArgumentException e) {
           log.warn("evt=get_all_batches_request invalid_payment_type paymentType={}", paymentType);
         }

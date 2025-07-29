@@ -48,6 +48,7 @@ public class JwtAuthInterceptor implements HandlerInterceptor {
       // Store user info and access token in request attributes for controller/service access
       request.setAttribute("userId", currentUser.getUserId());
       request.setAttribute("userType", currentUser.getUserType());
+      request.setAttribute("organizationId", currentUser.getOrganizationId());
       request.setAttribute("accessToken", authUtil.extractAccessToken(authorization));
 
       log.debug(

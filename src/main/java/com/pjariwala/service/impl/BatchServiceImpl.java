@@ -9,7 +9,9 @@ import com.pjariwala.dto.BatchRequestDTO;
 import com.pjariwala.dto.BatchResponseDTO;
 import com.pjariwala.dto.PageResponseDTO;
 import com.pjariwala.enums.ActionType;
+import com.pjariwala.enums.BatchStatus;
 import com.pjariwala.enums.EntityType;
+import com.pjariwala.enums.PaymentType;
 import com.pjariwala.enums.UserType;
 import com.pjariwala.exception.AuthException;
 import com.pjariwala.exception.UserException;
@@ -17,6 +19,7 @@ import com.pjariwala.model.Batch;
 import com.pjariwala.model.User;
 import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.BatchService;
+import com.pjariwala.service.EnrollmentService;
 import com.pjariwala.service.UserService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -38,6 +41,7 @@ public class BatchServiceImpl implements BatchService {
 
   @Autowired private ActivityLogService activityLogService;
   @Autowired private UserService userService;
+  @Autowired private EnrollmentService enrollmentService;
 
   @Override
   public BatchResponseDTO createBatch(BatchRequestDTO batchRequest, String requestingUserId) {
@@ -57,20 +61,22 @@ public class BatchServiceImpl implements BatchService {
             .batchId(generateBatchId())
             .batchName(batchRequest.getBatchName())
             .batchSize(batchRequest.getBatchSize())
-            .currentStudents(0) // Initial count
+            // currentStudents is now calculated dynamically
             .startDate(batchRequest.getStartDate())
             .endDate(batchRequest.getEndDate())
             .batchTiming(convertTimingToEntity(batchRequest.getBatchTiming()))
             .paymentType(batchRequest.getPaymentType())
-            .monthlyFee(batchRequest.getMonthlyFee())
-            .oneTimeFee(batchRequest.getOneTimeFee())
+            .fixedMonthlyFee(batchRequest.getFixedMonthlyFee())
+            .perSessionFee(batchRequest.getPerSessionFee())
             .occurrenceType(batchRequest.getOccurrenceType())
             .batchStatus(
                 batchRequest.getBatchStatus() != null
                     ? batchRequest.getBatchStatus()
-                    : Batch.BatchStatus.UPCOMING)
+                    : BatchStatus.UPCOMING)
             .notes(batchRequest.getNotes())
             .coachId(batchRequest.getCoachId())
+            .timezone(
+                batchRequest.getTimezone() != null ? batchRequest.getTimezone() : "Asia/Kolkata")
             .createdAt(LocalDateTime.now())
             .updatedAt(LocalDateTime.now())
             .build();
@@ -97,9 +103,9 @@ public class BatchServiceImpl implements BatchService {
 
   @Override
   public PageResponseDTO<BatchResponseDTO> getAllBatches(
-      Optional<Batch.BatchStatus> status,
+      Optional<BatchStatus> status,
       Optional<String> nameContains,
-      Optional<Batch.PaymentType> paymentType,
+      Optional<PaymentType> paymentType,
       Optional<String> coachId,
       int page,
       int size,
@@ -136,9 +142,17 @@ public class BatchServiceImpl implements BatchService {
 
       // Apply authorization filter if user is not a coach
       if (!"COACH".equals(requestingUser.getUserType())) {
-        // Students can only see their enrolled batches - this would require enrollment service
-        // For now, students can see all batches but with limited information
-        log.debug("evt=get_all_batches student_limited_view userId={}", requestingUserId);
+        // Students can only see their enrolled batches
+        List<String> enrolledBatchIds =
+            enrollmentService.getEnrolledBatchIdsForStudent(requestingUserId);
+        allBatches =
+            allBatches.stream()
+                .filter(batch -> enrolledBatchIds.contains(batch.getBatchId()))
+                .toList();
+        log.debug(
+            "evt=get_all_batches student_filtered userId={} enrolledBatches={}",
+            requestingUserId,
+            enrolledBatchIds.size());
       }
 
       // Apply additional filters
@@ -214,8 +228,6 @@ public class BatchServiceImpl implements BatchService {
       existingBatch.setEndDate(batchRequest.getEndDate());
       existingBatch.setBatchTiming(convertTimingToEntity(batchRequest.getBatchTiming()));
       existingBatch.setPaymentType(batchRequest.getPaymentType());
-      existingBatch.setMonthlyFee(batchRequest.getMonthlyFee());
-      existingBatch.setOneTimeFee(batchRequest.getOneTimeFee());
       existingBatch.setOccurrenceType(batchRequest.getOccurrenceType());
       if (batchRequest.getBatchStatus() != null) {
         existingBatch.setBatchStatus(batchRequest.getBatchStatus());
@@ -266,7 +278,7 @@ public class BatchServiceImpl implements BatchService {
       }
 
       // Soft delete by setting status to CANCELLED
-      existingBatch.setBatchStatus(Batch.BatchStatus.CANCELLED);
+      existingBatch.setBatchStatus(BatchStatus.CANCELLED);
       existingBatch.setUpdatedAt(LocalDateTime.now());
       dynamoDBMapper.save(existingBatch);
 
@@ -299,7 +311,7 @@ public class BatchServiceImpl implements BatchService {
   public boolean batchExists(String batchId) {
     try {
       Batch batch = dynamoDBMapper.load(Batch.class, batchId);
-      return batch != null && batch.getBatchStatus() != Batch.BatchStatus.CANCELLED;
+      return batch != null && batch.getBatchStatus() != BatchStatus.CANCELLED;
     } catch (Exception e) {
       log.error("evt=batch_exists_error batchId={}", batchId, e);
       return false;
@@ -347,7 +359,7 @@ public class BatchServiceImpl implements BatchService {
 
   @Override
   public PageResponseDTO<BatchResponseDTO> getBatchesByStatus(
-      Batch.BatchStatus status, int page, int size) {
+      BatchStatus status, int page, int size) {
     log.info("evt=get_batches_by_status_start status={} page={} size={}", status, page, size);
 
     List<Batch> batches = getBatchesByStatusFromDb(status);
@@ -381,12 +393,6 @@ public class BatchServiceImpl implements BatchService {
     }
     if (request.getPaymentType() == null) {
       throw UserException.validationError("Payment type is required");
-    }
-    if (request.getPaymentType() == Batch.PaymentType.MONTHLY && request.getMonthlyFee() == null) {
-      throw UserException.validationError("Monthly fee is required for MONTHLY payment type");
-    }
-    if (request.getPaymentType() == Batch.PaymentType.ONE_TIME && request.getOneTimeFee() == null) {
-      throw UserException.validationError("One-time fee is required for ONE_TIME payment type");
     }
     if (request.getBatchTiming() == null) {
       throw UserException.validationError("Batch timing is required");
@@ -491,21 +497,32 @@ public class BatchServiceImpl implements BatchService {
   }
 
   private BatchResponseDTO convertToResponseDTO(Batch batch) {
+    log.debug("evt=convert_batch_to_response_dto batchId={}", batch.getBatchId());
+
+    // Calculate current students dynamically by counting active enrollments
+    int currentStudents = enrollmentService.countActiveEnrollmentsByBatch(batch.getBatchId());
+
+    log.debug(
+        "evt=convert_batch_to_response_dto_success batchId={} currentStudents={}",
+        batch.getBatchId(),
+        currentStudents);
+
     return new BatchResponseDTO(
         batch.getBatchId(),
         batch.getBatchName(),
         batch.getBatchSize(),
-        batch.getCurrentStudents(),
+        currentStudents,
         batch.getStartDate(),
         batch.getEndDate(),
         convertTimingToDTO(batch.getBatchTiming()),
         batch.getPaymentType(),
-        batch.getMonthlyFee(),
-        batch.getOneTimeFee(),
+        batch.getFixedMonthlyFee(),
+        batch.getPerSessionFee(),
         batch.getOccurrenceType(),
         batch.getBatchStatus(),
         batch.getNotes(),
         batch.getCoachId(),
+        batch.getTimezone(),
         batch.getCreatedAt(),
         batch.getUpdatedAt());
   }
@@ -524,7 +541,7 @@ public class BatchServiceImpl implements BatchService {
     return new ArrayList<>(dynamoDBMapper.query(Batch.class, queryExpression));
   }
 
-  private List<Batch> getBatchesByStatusFromDb(Batch.BatchStatus status) {
+  private List<Batch> getBatchesByStatusFromDb(BatchStatus status) {
     Map<String, AttributeValue> eav = new HashMap<>();
     eav.put(":status", new AttributeValue().withS(status.toString()));
 
@@ -540,9 +557,9 @@ public class BatchServiceImpl implements BatchService {
 
   private List<Batch> applyFilters(
       List<Batch> batches,
-      Optional<Batch.BatchStatus> status,
+      Optional<BatchStatus> status,
       Optional<String> nameContains,
-      Optional<Batch.PaymentType> paymentType) {
+      Optional<PaymentType> paymentType) {
 
     return batches.stream()
         .filter(

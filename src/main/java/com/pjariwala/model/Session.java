@@ -2,15 +2,16 @@ package com.pjariwala.model;
 
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBAttribute;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBHashKey;
-import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBIndexHashKey;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBRangeKey;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBTable;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBTypeConverted;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBTypeConvertedEnum;
 import com.pjariwala.util.LocalDateConverter;
 import com.pjariwala.util.LocalDateTimeConverter;
+import com.pjariwala.util.LocalTimeConverter;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -20,39 +21,36 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@DynamoDBTable(tableName = "GCA_Enrollments")
-public class Enrollment {
+@DynamoDBTable(tableName = "GCA_Sessions")
+public class Session {
 
-  // Composite Primary Key
   @DynamoDBHashKey(attributeName = "organizationId")
   private String organizationId;
 
-  @DynamoDBRangeKey(attributeName = "enrollmentId")
-  private String enrollmentId;
+  @DynamoDBRangeKey(attributeName = "sessionId")
+  private String sessionId;
 
   @DynamoDBAttribute(attributeName = "batchId")
   private String batchId;
 
-  @DynamoDBAttribute(attributeName = "studentId")
-  @DynamoDBIndexHashKey(
-      globalSecondaryIndexName = "studentId-batchId-index",
-      attributeName = "studentId")
-  private String studentId;
-
-  @DynamoDBAttribute(attributeName = "enrollmentDate")
+  @DynamoDBAttribute(attributeName = "sessionDate")
   @DynamoDBTypeConverted(converter = LocalDateConverter.class)
-  private LocalDate enrollmentDate;
+  private LocalDate sessionDate;
 
-  @DynamoDBAttribute(attributeName = "enrollmentStatus")
+  @DynamoDBAttribute(attributeName = "startTime")
+  @DynamoDBTypeConverted(converter = LocalTimeConverter.class)
+  private LocalTime startTime;
+
+  @DynamoDBAttribute(attributeName = "endTime")
+  @DynamoDBTypeConverted(converter = LocalTimeConverter.class)
+  private LocalTime endTime;
+
+  @DynamoDBAttribute(attributeName = "status")
   @DynamoDBTypeConvertedEnum
-  private EnrollmentStatus enrollmentStatus;
+  private SessionStatus status;
 
-  @DynamoDBAttribute(attributeName = "paymentStatus")
-  @DynamoDBTypeConvertedEnum
-  private PaymentStatus enrollmentPaymentStatus;
-
-  @DynamoDBAttribute(attributeName = "currentPaymentAmount")
-  private Double currentPaymentAmount;
+  @DynamoDBAttribute(attributeName = "coachId")
+  private String coachId;
 
   @DynamoDBAttribute(attributeName = "notes")
   private String notes;
@@ -65,18 +63,9 @@ public class Enrollment {
   @DynamoDBTypeConverted(converter = LocalDateTimeConverter.class)
   private LocalDateTime updatedAt;
 
-  // --- Enums ---
-  public enum EnrollmentStatus {
-    ENROLLED,
-    DROPPED,
-    COMPLETED
-  }
-
-  public enum PaymentStatus {
-    PENDING,
-    PAID,
-    PARTIALLY_PAID,
-    OVERDUE,
-    REFUNDED
+  public enum SessionStatus {
+    SCHEDULED,
+    COMPLETED,
+    CANCELLED
   }
 }

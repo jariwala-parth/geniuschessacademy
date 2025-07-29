@@ -1,7 +1,9 @@
 package com.pjariwala.dto;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
-import com.pjariwala.model.Batch;
+import com.pjariwala.enums.BatchStatus;
+import com.pjariwala.enums.OccurrenceType;
+import com.pjariwala.enums.PaymentType;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -26,13 +28,16 @@ public class BatchResponseDTO {
   private LocalDate endDate;
 
   private BatchTimingDTO batchTiming;
-  private Batch.PaymentType paymentType;
-  private Double monthlyFee;
-  private Double oneTimeFee;
-  private Batch.OccurrenceType occurrenceType;
-  private Batch.BatchStatus batchStatus;
+  private PaymentType paymentType;
+
+  private Double fixedMonthlyFee;
+  private Double perSessionFee;
+
+  private OccurrenceType occurrenceType;
+  private BatchStatus batchStatus;
   private String notes;
   private String coachId;
+  private String timezone;
 
   @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
   private LocalDateTime createdAt;

@@ -18,6 +18,9 @@ import org.springframework.context.annotation.Import;
   UserServiceImpl.class,
   JwtUtil.class,
   LocalDateTimeConverter.class,
+  // Organization APIs
+  com.pjariwala.controller.OrganizationController.class,
+  com.pjariwala.service.impl.OrganizationServiceImpl.class,
   // Batch APIs
   com.pjariwala.controller.BatchController.class,
   com.pjariwala.service.impl.BatchServiceImpl.class,
@@ -26,6 +29,12 @@ import org.springframework.context.annotation.Import;
   // Enrollment APIs
   com.pjariwala.controller.EnrollmentController.class,
   com.pjariwala.service.impl.EnrollmentServiceImpl.class,
+  // Attendance APIs
+  com.pjariwala.controller.AttendanceController.class,
+  com.pjariwala.service.impl.AttendanceServiceImpl.class,
+  // Invoice APIs
+  com.pjariwala.controller.InvoiceController.class,
+  com.pjariwala.service.impl.InvoiceServiceImpl.class,
   // Configuration
   com.pjariwala.config.SwaggerConfig.class,
   com.pjariwala.config.WebConfig.class,

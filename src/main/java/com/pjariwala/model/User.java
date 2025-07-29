@@ -18,10 +18,13 @@ import lombok.NoArgsConstructor;
 @DynamoDBTable(tableName = "GCA_Users")
 public class User {
 
-  @DynamoDBHashKey(attributeName = "userId")
+  @DynamoDBHashKey(attributeName = "organizationId")
+  private String organizationId;
+
+  @DynamoDBRangeKey(attributeName = "userId")
   private String userId;
 
-  @DynamoDBRangeKey(attributeName = "userType")
+  @DynamoDBAttribute(attributeName = "userType")
   private String userType; // "COACH" or "STUDENT"
 
   @DynamoDBAttribute(attributeName = "username")

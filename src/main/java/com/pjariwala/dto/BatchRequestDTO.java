@@ -2,7 +2,9 @@ package com.pjariwala.dto;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
-import com.pjariwala.model.Batch;
+import com.pjariwala.enums.BatchStatus;
+import com.pjariwala.enums.OccurrenceType;
+import com.pjariwala.enums.PaymentType;
 import com.pjariwala.util.CustomLocalTimeDeserializer;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -37,19 +39,21 @@ public class BatchRequestDTO {
   private BatchTimingDTO batchTiming;
 
   @NotNull(message = "Payment type is required")
-  private Batch.PaymentType paymentType;
+  private PaymentType paymentType;
 
-  private Double monthlyFee;
-  private Double oneTimeFee;
+  private Double fixedMonthlyFee;
+  private Double perSessionFee;
 
   @NotNull(message = "Occurrence type is required")
-  private Batch.OccurrenceType occurrenceType;
+  private OccurrenceType occurrenceType;
 
-  private Batch.BatchStatus batchStatus;
+  private BatchStatus batchStatus;
   private String notes;
 
   @NotBlank(message = "Coach ID is required")
   private String coachId;
+
+  private String timezone;
 
   @Data
   @NoArgsConstructor

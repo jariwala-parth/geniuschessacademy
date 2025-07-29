@@ -48,4 +48,10 @@ public interface EnrollmentService {
       int page,
       int size,
       String requestingUserId);
+
+  /** Count active enrollments for a batch */
+  int countActiveEnrollmentsByBatch(String batchId);
+
+  /** Get all batch IDs that a student is enrolled in */
+  List<String> getEnrolledBatchIdsForStudent(String studentId);
 }

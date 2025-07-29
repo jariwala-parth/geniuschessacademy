@@ -10,6 +10,7 @@ import com.pjariwala.dto.EnrollmentRequestDTO;
 import com.pjariwala.dto.EnrollmentResponseDTO;
 import com.pjariwala.dto.PageResponseDTO;
 import com.pjariwala.enums.ActionType;
+import com.pjariwala.enums.BatchStatus;
 import com.pjariwala.enums.EntityType;
 import com.pjariwala.enums.UserType;
 import com.pjariwala.exception.AuthException;
@@ -544,6 +545,28 @@ public class EnrollmentServiceImpl implements EnrollmentService {
     }
   }
 
+  @Override
+  public int countActiveEnrollmentsByBatch(String batchId) {
+    log.debug("evt=count_active_enrollments_request batchId={}", batchId);
+
+    Map<String, AttributeValue> eav = new HashMap<>();
+    eav.put(":batchId", new AttributeValue().withS(batchId));
+    eav.put(":enrolledStatus", new AttributeValue().withS("ENROLLED"));
+
+    DynamoDBQueryExpression<Enrollment> queryExpression =
+        new DynamoDBQueryExpression<Enrollment>()
+            .withKeyConditionExpression("batchId = :batchId")
+            .withFilterExpression("enrollmentStatus = :enrolledStatus")
+            .withExpressionAttributeValues(eav);
+
+    PaginatedQueryList<Enrollment> queryResult =
+        dynamoDBMapper.query(Enrollment.class, queryExpression);
+
+    int count = queryResult.size();
+    log.debug("evt=count_active_enrollments_success batchId={} count={}", batchId, count);
+    return count;
+  }
+
   private void validateEnrollmentRequest(EnrollmentRequestDTO request) {
     log.debug("evt=validate_enrollment_request_start");
 
@@ -571,7 +594,7 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         throw UserException.userNotFound("Batch not found: " + batchId);
       }
 
-      if (batch.getBatchStatus() == Batch.BatchStatus.CANCELLED) {
+      if (batch.getBatchStatus() == BatchStatus.CANCELLED) {
         log.error("evt=validate_batch_cancelled batchId={}", batchId);
         throw UserException.validationError("Cannot enroll in cancelled batch: " + batchId);
       }
@@ -588,14 +611,13 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         throw UserException.validationError("Cannot enroll inactive student: " + studentId);
       }
 
-      // Check if batch is full
-      if (batch.getCurrentStudents() != null
-          && batch.getBatchSize() != null
-          && batch.getCurrentStudents() >= batch.getBatchSize()) {
+      // Check if batch is full using dynamic count
+      int currentStudents = countActiveEnrollmentsByBatch(batchId);
+      if (batch.getBatchSize() != null && currentStudents >= batch.getBatchSize()) {
         log.error(
             "evt=validate_batch_full batchId={} current={} max={}",
             batchId,
-            batch.getCurrentStudents(),
+            currentStudents,
             batch.getBatchSize());
         throw UserException.validationError(
             "Batch is full (capacity: " + batch.getBatchSize() + ")");
@@ -726,5 +748,32 @@ public class EnrollmentServiceImpl implements EnrollmentService {
     PaginatedQueryList<Enrollment> queryResult =
         dynamoDBMapper.query(Enrollment.class, queryExpression);
     return new ArrayList<>(queryResult);
+  }
+
+  @Override
+  public List<String> getEnrolledBatchIdsForStudent(String studentId) {
+    log.debug("evt=get_enrolled_batch_ids_for_student studentId={}", studentId);
+
+    try {
+      List<Enrollment> enrollments = getEnrollmentsByStudentFromDb(studentId);
+
+      // Filter for active enrollments and extract batch IDs
+      List<String> batchIds =
+          enrollments.stream()
+              .filter(
+                  enrollment ->
+                      enrollment.getEnrollmentStatus() == Enrollment.EnrollmentStatus.ENROLLED)
+              .map(Enrollment::getBatchId)
+              .toList();
+
+      log.debug(
+          "evt=get_enrolled_batch_ids_for_student_success studentId={} batchCount={}",
+          studentId,
+          batchIds.size());
+      return batchIds;
+    } catch (Exception e) {
+      log.error("evt=get_enrolled_batch_ids_for_student_error studentId={}", studentId, e);
+      throw UserException.databaseError("Failed to get enrolled batch IDs for student", e);
+    }
   }
 }

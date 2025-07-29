@@ -3,7 +3,8 @@ package com.pjariwala.service;
 import com.pjariwala.dto.BatchRequestDTO;
 import com.pjariwala.dto.BatchResponseDTO;
 import com.pjariwala.dto.PageResponseDTO;
-import com.pjariwala.model.Batch;
+import com.pjariwala.enums.BatchStatus;
+import com.pjariwala.enums.PaymentType;
 import java.util.Optional;
 
 public interface BatchService {
@@ -13,9 +14,9 @@ public interface BatchService {
 
   /** Get all batches with optional filtering and pagination */
   PageResponseDTO<BatchResponseDTO> getAllBatches(
-      Optional<Batch.BatchStatus> status,
+      Optional<BatchStatus> status,
       Optional<String> nameContains,
-      Optional<Batch.PaymentType> paymentType,
+      Optional<PaymentType> paymentType,
       Optional<String> coachId,
       int page,
       int size,
@@ -39,8 +40,7 @@ public interface BatchService {
       String coachId, int page, int size, String requestingUserId);
 
   /** Get batches by status */
-  PageResponseDTO<BatchResponseDTO> getBatchesByStatus(
-      Batch.BatchStatus status, int page, int size);
+  PageResponseDTO<BatchResponseDTO> getBatchesByStatus(BatchStatus status, int page, int size);
 
   /** Generate unique batch ID */
   String generateBatchId();
