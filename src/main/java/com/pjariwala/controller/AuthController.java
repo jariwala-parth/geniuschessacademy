@@ -1,7 +1,9 @@
 package com.pjariwala.controller;
 
+import com.pjariwala.dto.AuthChallengeRequest;
 import com.pjariwala.dto.AuthRequest;
 import com.pjariwala.dto.AuthResponse;
+import com.pjariwala.dto.LoginResult;
 import com.pjariwala.dto.SignupRequest;
 import com.pjariwala.dto.UserInfo;
 import com.pjariwala.service.ActivityLogService;
@@ -11,6 +13,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -40,7 +43,7 @@ public class AuthController {
       description =
           "Register a new user (coach or student). No authentication required for initial coach"
               + " signup.")
-  public ResponseEntity<AuthResponse> signup(@RequestBody SignupRequest signupRequest) {
+  public ResponseEntity<AuthResponse> signup(@Valid @RequestBody SignupRequest signupRequest) {
     log.info(
         "Received signup request for email: {} with userType: {}",
         signupRequest.getEmail(),
@@ -57,7 +60,7 @@ public class AuthController {
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<UserInfo> addStudent(
       @Parameter(hidden = true) @RequestAttribute("userId") String coachId,
-      @RequestBody SignupRequest signupRequest) {
+      @Valid @RequestBody SignupRequest signupRequest) {
 
     log.info("evt=add_student_request coachId={} email={}", coachId, signupRequest.getEmail());
 
@@ -72,14 +75,30 @@ public class AuthController {
   @PostMapping("/login")
   @Operation(
       summary = "User login",
-      description = "Authenticate user and get JWT token. No authentication required.")
-  public ResponseEntity<AuthResponse> login(@RequestBody AuthRequest authRequest) {
-    log.info(
-        "evt=login_request login={} userType={}",
-        authRequest.getLogin(),
-        authRequest.getUserType());
-    AuthResponse response = authService.login(authRequest);
+      description =
+          "Authenticate user and get JWT token or challenge response. No authentication required.")
+  public ResponseEntity<?> login(@Valid @RequestBody AuthRequest authRequest) {
+    log.info("evt=login_request login={}", authRequest.getLogin());
+    LoginResult result = authService.login(authRequest);
+
+    if (result.isChallenge()) {
+      log.info("evt=login_challenge_required login={}", authRequest.getLogin());
+      return ResponseEntity.status(HttpStatus.ACCEPTED).body(result.getChallengeResponse());
+    }
+
     log.info("evt=login_success login={}", authRequest.getLogin());
+    return ResponseEntity.ok(result.getAuthResponse());
+  }
+
+  @PostMapping("/respond-challenge")
+  @Operation(
+      summary = "Respond to authentication challenge",
+      description = "Respond to NEW_PASSWORD_REQUIRED challenge by setting a new password")
+  public ResponseEntity<AuthResponse> respondChallenge(
+      @Valid @RequestBody AuthChallengeRequest challengeRequest) {
+    log.info("evt=respond_challenge_request");
+    AuthResponse response = authService.respondChallenge(challengeRequest);
+    log.info("evt=respond_challenge_success");
     return ResponseEntity.ok(response);
   }
 

@@ -5,17 +5,27 @@ public class AuthException extends RuntimeException {
 
   private final String errorCode;
   private final int httpStatus;
+  private final String session;
 
   public AuthException(String errorCode, String message, int httpStatus) {
     super(message);
     this.errorCode = errorCode;
     this.httpStatus = httpStatus;
+    this.session = null;
   }
 
   public AuthException(String errorCode, String message, int httpStatus, Throwable cause) {
     super(message, cause);
     this.errorCode = errorCode;
     this.httpStatus = httpStatus;
+    this.session = null;
+  }
+
+  public AuthException(String errorCode, String message, int httpStatus, String session) {
+    super(message);
+    this.errorCode = errorCode;
+    this.httpStatus = httpStatus;
+    this.session = session;
   }
 
   public String getErrorCode() {
@@ -24,6 +34,10 @@ public class AuthException extends RuntimeException {
 
   public int getHttpStatus() {
     return httpStatus;
+  }
+
+  public String getSession() {
+    return session;
   }
 
   // Static factory methods for common auth exceptions
@@ -62,5 +76,10 @@ public class AuthException extends RuntimeException {
   public static AuthException cognitoError(String message, Throwable cause) {
     return new AuthException(
         "COGNITO_ERROR", "Authentication service error: " + message, 500, cause);
+  }
+
+  public static AuthException challengeRequired(String challengeName, String session) {
+    return new AuthException(
+        "CHALLENGE_REQUIRED", "Authentication challenge required: " + challengeName, 202, session);
   }
 }

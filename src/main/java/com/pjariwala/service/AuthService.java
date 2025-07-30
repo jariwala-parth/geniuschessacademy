@@ -1,7 +1,9 @@
 package com.pjariwala.service;
 
+import com.pjariwala.dto.AuthChallengeRequest;
 import com.pjariwala.dto.AuthRequest;
 import com.pjariwala.dto.AuthResponse;
+import com.pjariwala.dto.LoginResult;
 import com.pjariwala.dto.SignupRequest;
 import com.pjariwala.dto.UserInfo;
 
@@ -13,8 +15,11 @@ public interface AuthService {
   /** Add a new student (for coaches only) */
   UserInfo addStudent(SignupRequest signupRequest, String coachId);
 
-  /** Authenticate user and return tokens */
-  AuthResponse login(AuthRequest authRequest);
+  /** Authenticate user and return tokens or challenge response */
+  LoginResult login(AuthRequest authRequest);
+
+  /** Respond to authentication challenge (e.g., NEW_PASSWORD_REQUIRED) */
+  AuthResponse respondChallenge(AuthChallengeRequest challengeRequest);
 
   /** Refresh access token using refresh token */
   AuthResponse refreshToken(String refreshToken);

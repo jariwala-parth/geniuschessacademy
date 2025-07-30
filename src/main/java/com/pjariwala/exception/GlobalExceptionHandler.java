@@ -24,8 +24,8 @@ public class GlobalExceptionHandler {
 
   /** Handle AuthException - authentication and authorization related errors */
   @ExceptionHandler(AuthException.class)
-  public ResponseEntity<ErrorResponse> handleAuthException(
-      AuthException e, HttpServletRequest request) {
+  public ResponseEntity<?> handleAuthException(AuthException e, HttpServletRequest request) {
+
     log.error(
         "AuthException caught - Code: {}, Message: {}, Path: {}",
         e.getErrorCode(),

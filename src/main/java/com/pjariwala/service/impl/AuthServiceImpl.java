@@ -11,6 +11,7 @@ import com.amazonaws.services.cognitoidp.model.AdminInitiateAuthResult;
 import com.amazonaws.services.cognitoidp.model.AttributeType;
 import com.amazonaws.services.cognitoidp.model.AuthFlowType;
 import com.amazonaws.services.cognitoidp.model.AuthenticationResultType;
+import com.amazonaws.services.cognitoidp.model.ChallengeNameType;
 import com.amazonaws.services.cognitoidp.model.ChangePasswordRequest;
 import com.amazonaws.services.cognitoidp.model.CodeMismatchException;
 import com.amazonaws.services.cognitoidp.model.ConfirmForgotPasswordRequest;
@@ -19,13 +20,18 @@ import com.amazonaws.services.cognitoidp.model.ForgotPasswordRequest;
 import com.amazonaws.services.cognitoidp.model.GlobalSignOutRequest;
 import com.amazonaws.services.cognitoidp.model.InvalidPasswordException;
 import com.amazonaws.services.cognitoidp.model.NotAuthorizedException;
+import com.amazonaws.services.cognitoidp.model.RespondToAuthChallengeRequest;
+import com.amazonaws.services.cognitoidp.model.RespondToAuthChallengeResult;
 import com.amazonaws.services.cognitoidp.model.SignUpRequest;
 import com.amazonaws.services.cognitoidp.model.SignUpResult;
 import com.amazonaws.services.cognitoidp.model.UserNotConfirmedException;
 import com.amazonaws.services.cognitoidp.model.UserNotFoundException;
 import com.amazonaws.services.cognitoidp.model.UsernameExistsException;
+import com.pjariwala.dto.AuthChallengeRequest;
+import com.pjariwala.dto.AuthChallengeResponse;
 import com.pjariwala.dto.AuthRequest;
 import com.pjariwala.dto.AuthResponse;
+import com.pjariwala.dto.LoginResult;
 import com.pjariwala.dto.SignupRequest;
 import com.pjariwala.dto.UserInfo;
 import com.pjariwala.exception.AuthException;
@@ -172,8 +178,7 @@ public class AuthServiceImpl implements AuthService {
         signupRequest.getEmail(),
         signupRequest.getUserType());
     try {
-      // Validate input
-      validateSignupRequest(signupRequest);
+      // Validation is handled by @NotEmpty annotations in the DTO
 
       // Check if user already exists in our system
       if (userService.userExistsByEmail(signupRequest.getEmail())) {
@@ -277,15 +282,19 @@ public class AuthServiceImpl implements AuthService {
 
       // Auto-login after successful signup
       log.info("Auto-login after successful signup for email: {}", signupRequest.getEmail());
-      AuthResponse response =
-          login(
-              new AuthRequest(
-                  signupRequest.getUsername(),
-                  signupRequest.getPassword(),
-                  signupRequest.getUserType()));
+      LoginResult loginResult =
+          login(new AuthRequest(signupRequest.getUsername(), signupRequest.getPassword()));
+
+      if (loginResult.isChallenge()) {
+        log.warn(
+            "Challenge required during auto-login after signup for email: {}",
+            signupRequest.getEmail());
+        throw AuthException.challengeRequired(
+            "NEW_PASSWORD_REQUIRED", loginResult.getChallengeResponse().getSession());
+      }
 
       log.info("Signup process completed successfully for email: {}", signupRequest.getEmail());
-      return response;
+      return loginResult.getAuthResponse();
 
     } catch (AuthException e) {
       // Re-throw our custom auth exceptions (like from auto-login) - don't wrap them
@@ -317,51 +326,17 @@ public class AuthServiceImpl implements AuthService {
   }
 
   @Override
-  public AuthResponse login(AuthRequest authRequest) {
-    log.info(
-        "Starting login process for user: {} with userType: {}",
-        authRequest.getLogin(),
-        authRequest.getUserType());
+  public LoginResult login(AuthRequest authRequest) {
+    log.info("Starting secure login process for user: {}", authRequest.getLogin());
     try {
-      // Validate input
-      validateAuthRequest(authRequest);
-
-      // ✅ STEP 1: Find user in our system first to get the Cognito username
-      log.debug("Retrieving user information from our system for: {}", authRequest.getLogin());
-      User user =
-          userService
-              .getUserByUsername(authRequest.getLogin())
-              .or(() -> userService.getUserByEmail(authRequest.getLogin()))
-              .or(() -> userService.getUserByPhone(authRequest.getLogin()))
-              .orElseThrow(
-                  () -> {
-                    log.error("User not found in our system for login: {}", authRequest.getLogin());
-                    return AuthException.invalidCredentials();
-                  });
-
-      log.info(
-          "User found in our system - userId: {}, cognitoUsername: {} for login: {}",
-          user.getUserId(),
-          user.getUsername(),
-          authRequest.getLogin());
-
-      // ✅ STEP 2: Use the stored Cognito username for authentication
-      String cognitoUsername = user.getUsername();
-      if (cognitoUsername == null || cognitoUsername.trim().isEmpty()) {
-        log.error("Cognito username not found for user: {}", authRequest.getLogin());
-        throw AuthException.invalidCredentials();
-      }
-
-      // ✅ STEP 3: Prepare authentication parameters with correct username
-      log.debug(
-          "Preparing authentication parameters for Cognito with username: {}", cognitoUsername);
+      // STEP 1: Prepare the authentication request for Cognito's admin flow
+      // Cognito can use username, email, or phone as the 'USERNAME'
       Map<String, String> authParameters = new HashMap<>();
-      authParameters.put("USERNAME", cognitoUsername);
+      authParameters.put("USERNAME", authRequest.getLogin());
       authParameters.put("PASSWORD", authRequest.getPassword());
-      authParameters.put("SECRET_HASH", calculateSecretHash(cognitoUsername));
+      // Add SECRET_HASH for admin flow
+      authParameters.put("SECRET_HASH", calculateSecretHash(authRequest.getLogin()));
 
-      // ✅ STEP 4: Initiate authentication with Cognito
-      log.debug("Initiating authentication with Cognito for username: {}", cognitoUsername);
       AdminInitiateAuthRequest initiateAuthRequest =
           new AdminInitiateAuthRequest()
               .withUserPoolId(userPoolId)
@@ -369,19 +344,31 @@ public class AuthServiceImpl implements AuthService {
               .withAuthFlow(AuthFlowType.ADMIN_USER_PASSWORD_AUTH)
               .withAuthParameters(authParameters);
 
+      // STEP 2: Initiate authentication with Cognito using admin flow
       AdminInitiateAuthResult authResult = cognitoClient.adminInitiateAuth(initiateAuthRequest);
 
-      // Handle any authentication challenges
+      // STEP 3: Handle authentication challenges (e.g., NEW_PASSWORD_REQUIRED)
       if (authResult.getChallengeName() != null) {
-        log.error(
+        log.info(
             "Authentication challenge required for user: {} - Challenge: {}",
             authRequest.getLogin(),
             authResult.getChallengeName());
+
+        // Handle NEW_PASSWORD_REQUIRED challenge
+        if (ChallengeNameType.NEW_PASSWORD_REQUIRED.name().equals(authResult.getChallengeName())) {
+          log.info("NEW_PASSWORD_REQUIRED challenge for user: {}", authRequest.getLogin());
+
+          // Return challenge response using wrapper
+          return LoginResult.forChallenge(
+              new AuthChallengeResponse(authResult.getChallengeName(), authResult.getSession()));
+        }
+
+        // Handle other challenges if needed in the future
         throw new RuntimeException(
-            "Authentication challenge required: " + authResult.getChallengeName());
+            "Unsupported authentication challenge: " + authResult.getChallengeName());
       }
 
-      // Get authentication result
+      // STEP 4: Get authentication result and build the response
       AuthenticationResultType authenticationResult = authResult.getAuthenticationResult();
 
       if (authenticationResult == null) {
@@ -393,7 +380,7 @@ public class AuthServiceImpl implements AuthService {
 
       log.info("Cognito authentication successful for user: {}", authRequest.getLogin());
 
-      // Build response with real JWT tokens from Cognito
+      // Build response with JWT tokens from Cognito
       AuthResponse response = new AuthResponse();
       response.setAccessToken(authenticationResult.getAccessToken());
       response.setRefreshToken(authenticationResult.getRefreshToken());
@@ -401,67 +388,79 @@ public class AuthServiceImpl implements AuthService {
       response.setTokenType(authenticationResult.getTokenType());
       response.setExpiresIn(authenticationResult.getExpiresIn());
 
-      // Set user information using separate UserInfo class
-      UserInfo userInfo = new UserInfo();
-      userInfo.setUserId(user.getUserId());
-      userInfo.setEmail(user.getEmail());
-      userInfo.setName(user.getName());
-      userInfo.setPhoneNumber(user.getPhoneNumber());
-      response.setUserInfo(userInfo);
+      // We DO NOT get userInfo here. The cognitoSub from the ID Token
+      // will be used in a separate API call to get all organizations and roles.
+      // This ensures proper multi-tenancy support.
 
       log.info("Login process completed successfully for user: {}", authRequest.getLogin());
+      return LoginResult.forSuccess(response);
 
-      //      // Log successful login activity
-      //      try {
-      //        activityLogService.logLogin(
-      //            user.getUserId(),
-      //            user.getName(),
-      //            "COACH".equals(user.getUserType()) ? UserType.COACH : UserType.STUDENT);
-      //      } catch (Exception e) {
-      //        log.warn("Failed to log login activity for user: {}", user.getUserId(), e);
-      //      }
+    } catch (NotAuthorizedException | UserNotConfirmedException | UserNotFoundException e) {
+      log.error("Authentication failed: ", e);
+      // Map these exceptions to a generic invalid credentials error to avoid
+      // telling an attacker if a user exists or not.
+      throw AuthException.invalidCredentials();
+    } catch (Exception e) {
+      log.error("System error during login: ", e);
+      throw AuthException.cognitoError("System error during login", e);
+    }
+  }
+
+  @Override
+  public AuthResponse respondChallenge(AuthChallengeRequest challengeRequest) {
+    log.info("Responding to authentication challenge");
+    try {
+      // Validation is handled by @NotEmpty annotations in the DTO
+
+      // Prepare challenge response parameters
+      Map<String, String> challengeResponses = new HashMap<>();
+      challengeResponses.put("NEW_PASSWORD", challengeRequest.getNewPassword());
+      // Add SECRET_HASH for admin flow
+      challengeResponses.put("SECRET_HASH", calculateSecretHash(challengeRequest.getUsername()));
+
+      // Respond to the NEW_PASSWORD_REQUIRED challenge
+      RespondToAuthChallengeRequest respondRequest =
+          new RespondToAuthChallengeRequest()
+              .withClientId(clientId)
+              .withChallengeName(ChallengeNameType.NEW_PASSWORD_REQUIRED)
+              .withSession(challengeRequest.getSession())
+              .withChallengeResponses(challengeResponses);
+
+      RespondToAuthChallengeResult result = cognitoClient.respondToAuthChallenge(respondRequest);
+
+      // Check if challenge was successful
+      if (result.getChallengeName() != null) {
+        log.error(
+            "Challenge response failed - additional challenge required: {}",
+            result.getChallengeName());
+        throw new RuntimeException("Challenge response failed - additional challenge required");
+      }
+
+      // Get authentication result
+      AuthenticationResultType authenticationResult = result.getAuthenticationResult();
+      if (authenticationResult == null) {
+        log.error("Challenge response failed - no authentication result returned");
+        throw new RuntimeException("Challenge response failed - no authentication result returned");
+      }
+
+      log.info("Authentication challenge completed successfully");
+
+      // Build response with JWT tokens from Cognito
+      AuthResponse response = new AuthResponse();
+      response.setAccessToken(authenticationResult.getAccessToken());
+      response.setRefreshToken(authenticationResult.getRefreshToken());
+      response.setIdToken(authenticationResult.getIdToken());
+      response.setTokenType(authenticationResult.getTokenType());
+      response.setExpiresIn(authenticationResult.getExpiresIn());
 
       return response;
 
-    } catch (AuthException e) {
-      // Re-throw our custom auth exceptions (like user not found) - don't wrap them
-      log.error(
-          "evt=login_auth_error user={} code={} msg={}",
-          authRequest.getLogin(),
-          e.getErrorCode(),
-          e.getMessage());
-      throw e;
-    } catch (NotAuthorizedException e) {
-      log.error(
-          "evt=login_cognito_unauthorized user={} msg=invalid_credentials",
-          authRequest.getLogin(),
-          e);
-      throw AuthException.invalidCredentials();
-    } catch (UserNotConfirmedException e) {
-      log.error(
-          "evt=login_cognito_unconfirmed user={} msg=email_not_confirmed",
-          authRequest.getLogin(),
-          e);
-      throw AuthException.emailNotConfirmed();
-    } catch (UserNotFoundException e) {
-      log.error(
-          "evt=login_cognito_user_not_found user={} msg=user_not_found_in_cognito",
-          authRequest.getLogin(),
-          e);
-      throw AuthException.invalidCredentials();
+    } catch (InvalidPasswordException e) {
+      log.error("Invalid password in challenge response: ", e);
+      throw AuthException.invalidPassword("Password does not meet requirements");
     } catch (Exception e) {
-      // Only use 500 status for actual system errors, not authentication failures
-      log.error(
-          "evt=login_system_error user={} msg=unexpected_system_error", authRequest.getLogin(), e);
-      if (e.getMessage() != null && e.getMessage().toLowerCase().contains("invalid")) {
-        // If the error message suggests invalid credentials, treat as 401
-        log.warn(
-            "evt=login_treating_as_invalid_credentials user={} error_msg={}",
-            authRequest.getLogin(),
-            e.getMessage());
-        throw AuthException.invalidCredentials();
-      }
-      throw AuthException.cognitoError("System error during login", e);
+      log.error("System error during challenge response: ", e);
+      throw AuthException.cognitoError("System error during challenge response", e);
     }
   }
 
@@ -637,9 +636,8 @@ public class AuthServiceImpl implements AuthService {
       ForgotPasswordRequest forgotPasswordRequest =
           new ForgotPasswordRequest()
               .withClientId(clientId)
-              .withUsername(cognitoUsername) // ✅ Use actual Cognito username
-              .withSecretHash(
-                  calculateSecretHash(cognitoUsername)); // ✅ Calculate with correct username
+              .withUsername(cognitoUsername)
+              .withSecretHash(calculateSecretHash(cognitoUsername));
 
       cognitoClient.forgotPassword(forgotPasswordRequest);
       log.info("evt=forgot_password_success user={}", login);
@@ -736,10 +734,9 @@ public class AuthServiceImpl implements AuthService {
       // Force user type to STUDENT
       signupRequest.setUserType("STUDENT");
 
-      // Validate input
-      validateSignupRequest(signupRequest);
-
-      // Validate student-specific fields
+      // Validation is handled by @NotEmpty annotations in the DTO
+      // Note: Guardian fields are optional in the DTO but required for students
+      // This validation is still needed for business logic
       if (signupRequest.getGuardianName() == null
           || signupRequest.getGuardianName().trim().isEmpty()) {
         log.error(
