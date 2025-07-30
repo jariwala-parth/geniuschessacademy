@@ -7,12 +7,13 @@ import com.amazonaws.services.dynamodbv2.datamodeling.PaginatedScanList;
 import com.amazonaws.services.dynamodbv2.model.AttributeValue;
 import com.pjariwala.dto.PageResponseDTO;
 import com.pjariwala.dto.UserInfo;
-import com.pjariwala.enums.ActionType;
-import com.pjariwala.enums.EntityType;
+import com.pjariwala.dto.UserOrganizationInfo;
+import com.pjariwala.dto.UserOrganizationsResponse;
 import com.pjariwala.enums.UserType;
+import com.pjariwala.exception.AuthException;
 import com.pjariwala.exception.UserException;
+import com.pjariwala.model.Organization;
 import com.pjariwala.model.User;
-import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.UserService;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -31,30 +32,11 @@ import org.springframework.util.StringUtils;
 public class UserServiceImpl implements UserService {
 
   @Autowired private DynamoDBMapper dynamoDBMapper;
-  @Autowired private ActivityLogService activityLogService;
 
   @Override
   public User createUser(User user) {
     try {
       dynamoDBMapper.save(user);
-
-      // Log user creation activity
-      try {
-        activityLogService.logAction(
-            "COACH".equals(user.getUserType())
-                ? ActionType.SYSTEM_ACTION
-                : ActionType.CREATE_STUDENT,
-            user.getUserId(),
-            user.getName(),
-            "COACH".equals(user.getUserType()) ? UserType.COACH : UserType.STUDENT,
-            String.format("Created new %s: %s", user.getUserType().toLowerCase(), user.getName()),
-            EntityType.USER,
-            user.getUserId(),
-            user.getName());
-      } catch (Exception e) {
-        log.warn("Failed to log user creation activity for user: {}", user.getUserId(), e);
-      }
-
       return user;
     } catch (Exception e) {
       log.error("Failed to create user", e);
@@ -77,12 +59,12 @@ public class UserServiceImpl implements UserService {
     try {
       // Query by primary key (userId + userType)
       // Since we don't know the userType, we need to scan or query both possible values
-      User coach = dynamoDBMapper.load(User.class, userId, "COACH");
+      User coach = dynamoDBMapper.load(User.class, userId, UserType.COACH.name());
       if (coach != null) {
         return Optional.of(coach);
       }
 
-      User student = dynamoDBMapper.load(User.class, userId, "STUDENT");
+      User student = dynamoDBMapper.load(User.class, userId, UserType.STUDENT.name());
       return Optional.ofNullable(student);
     } catch (Exception e) {
       return Optional.empty();
@@ -180,14 +162,15 @@ public class UserServiceImpl implements UserService {
   }
 
   @Override
-  public List<User> getUsersByType(String userType) {
+  public List<User> getUsersByType(String userType, String organizationId) {
     try {
       Map<String, AttributeValue> expressionAttributeValues = new HashMap<>();
       expressionAttributeValues.put(":userType", new AttributeValue().withS(userType));
+      expressionAttributeValues.put(":organizationId", new AttributeValue().withS(organizationId));
 
       DynamoDBScanExpression scanExpression =
           new DynamoDBScanExpression()
-              .withFilterExpression("userType = :userType")
+              .withFilterExpression("userType = :userType AND organizationId = :organizationId")
               .withExpressionAttributeValues(expressionAttributeValues);
 
       PaginatedScanList<User> scanResult = dynamoDBMapper.scan(User.class, scanExpression);
@@ -200,17 +183,31 @@ public class UserServiceImpl implements UserService {
 
   @Override
   public PageResponseDTO<UserInfo> getUsersByTypeWithSearch(
-      String userType, String searchTerm, int page, int size) {
+      String userType,
+      String searchTerm,
+      int page,
+      int size,
+      String requestingUserId,
+      String organizationId) {
     try {
       log.info(
-          "Searching users: userType={}, searchTerm={}, page={}, size={}",
+          "evt=search_users userType={} searchTerm={} page={} size={} requestingUserId={}"
+              + " organizationId={}",
           userType,
           searchTerm,
           page,
-          size);
+          size,
+          requestingUserId,
+          organizationId);
+
+      // Validate organization access
+      validateOrganizationAccess(requestingUserId, organizationId);
+
+      // Validate that the requesting user is a coach
+      requireCoachPermission(requestingUserId, organizationId);
 
       // First, get all users of the specified type
-      List<User> allUsers = getUsersByType(userType);
+      List<User> allUsers = getUsersByType(userType, organizationId);
 
       // Apply search filter if provided
       List<User> filteredUsers = allUsers;
@@ -258,14 +255,14 @@ public class UserServiceImpl implements UserService {
       response.setPageInfo(pageInfo);
 
       log.info(
-          "Search completed: found {} total, returning {} on page {}",
+          "evt=search_users_success total={} returned={} page={}",
           totalElements,
           userInfoList.size(),
           page);
       return response;
 
     } catch (Exception e) {
-      log.error("Failed to search users by type: {}", userType, e);
+      log.error("evt=search_users_error userType={} error={}", userType, e.getMessage(), e);
       throw UserException.databaseError("Failed to search users", e);
     }
   }
@@ -274,23 +271,6 @@ public class UserServiceImpl implements UserService {
   public User updateUser(User user) {
     try {
       dynamoDBMapper.save(user);
-
-      // Log user update activity
-      try {
-        activityLogService.logAction(
-            ActionType.UPDATE_STUDENT,
-            user.getUserId(),
-            user.getName(),
-            "COACH".equals(user.getUserType()) ? UserType.COACH : UserType.STUDENT,
-            String.format(
-                "Updated %s profile: %s", user.getUserType().toLowerCase(), user.getName()),
-            EntityType.USER,
-            user.getUserId(),
-            user.getName());
-      } catch (Exception e) {
-        log.warn("Failed to log user update activity for user: {}", user.getUserId(), e);
-      }
-
       return user;
     } catch (Exception e) {
       log.error("Failed to update user: {}", user.getUserId(), e);
@@ -304,21 +284,6 @@ public class UserServiceImpl implements UserService {
       User user = getUserById(userId, userType);
       if (user != null) {
         dynamoDBMapper.delete(user);
-
-        // Log user deletion activity
-        try {
-          activityLogService.logAction(
-              ActionType.DELETE_STUDENT,
-              user.getUserId(),
-              user.getName(),
-              "COACH".equals(user.getUserType()) ? UserType.COACH : UserType.STUDENT,
-              String.format("Deleted %s: %s", user.getUserType().toLowerCase(), user.getName()),
-              EntityType.USER,
-              user.getUserId(),
-              user.getName());
-        } catch (Exception e) {
-          log.warn("Failed to log user deletion activity for user: {}", userId, e);
-        }
       }
     } catch (Exception e) {
       log.error("Failed to delete user: {}", userId, e);
@@ -364,13 +329,180 @@ public class UserServiceImpl implements UserService {
     return "USER_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
   }
 
+  @Override
+  public UserOrganizationsResponse getUserOrganizations(String userId) {
+    log.info("evt=get_user_organizations_start userId={}", userId);
+
+    try {
+      List<UserOrganizationInfo> organizations = new ArrayList<>();
+
+      // Get user by ID to find their organizations
+      Optional<User> userOpt = getUserById(userId);
+      if (userOpt.isEmpty()) {
+        log.error("evt=get_user_organizations_user_not_found userId={}", userId);
+        throw UserException.userNotFound("User not found: " + userId);
+      }
+
+      User user = userOpt.get();
+
+      // If user is a SUPER_ADMIN, they can access all organizations
+      if ("SUPER_ADMIN".equals(user.getUserType())) {
+        // Get all organizations
+        DynamoDBScanExpression scanExpression = new DynamoDBScanExpression();
+        List<Organization> allOrgs = dynamoDBMapper.scan(Organization.class, scanExpression);
+
+        for (Organization org : allOrgs) {
+          if (org.getIsActive() != null && org.getIsActive()) {
+            UserOrganizationInfo orgInfo = new UserOrganizationInfo();
+            orgInfo.setOrganizationId(org.getOrganizationId());
+            orgInfo.setOrganizationName(org.getOrganizationName());
+            orgInfo.setUserRole("SUPER_ADMIN");
+            orgInfo.setIsActive(org.getIsActive());
+            organizations.add(orgInfo);
+          }
+        }
+      } else {
+        // For regular users, check if they own any organizations
+        Map<String, AttributeValue> eav = new HashMap<>();
+        eav.put(":ownerId", new AttributeValue().withS(userId));
+
+        DynamoDBQueryExpression<Organization> queryExpression =
+            new DynamoDBQueryExpression<Organization>()
+                .withIndexName("ownerId-index")
+                .withConsistentRead(false)
+                .withKeyConditionExpression("ownerId = :ownerId")
+                .withExpressionAttributeValues(eav);
+
+        List<Organization> ownedOrgs = dynamoDBMapper.query(Organization.class, queryExpression);
+
+        for (Organization org : ownedOrgs) {
+          if (org.getIsActive() != null && org.getIsActive()) {
+            UserOrganizationInfo orgInfo = new UserOrganizationInfo();
+            orgInfo.setOrganizationId(org.getOrganizationId());
+            orgInfo.setOrganizationName(org.getOrganizationName());
+            orgInfo.setUserRole("OWNER");
+            orgInfo.setIsActive(org.getIsActive());
+            organizations.add(orgInfo);
+          }
+        }
+
+        // Also add the organization where the user is a member (COACH or STUDENT)
+        if (user.getOrganizationId() != null) {
+          Organization userOrg = dynamoDBMapper.load(Organization.class, user.getOrganizationId());
+          if (userOrg != null && userOrg.getIsActive() != null && userOrg.getIsActive()) {
+            // Check if this organization is not already added as owned
+            boolean alreadyAdded =
+                organizations.stream()
+                    .anyMatch(org -> org.getOrganizationId().equals(user.getOrganizationId()));
+
+            if (!alreadyAdded) {
+              UserOrganizationInfo orgInfo = new UserOrganizationInfo();
+              orgInfo.setOrganizationId(user.getOrganizationId());
+              orgInfo.setOrganizationName(userOrg.getOrganizationName());
+              orgInfo.setUserRole(user.getUserType()); // COACH or STUDENT
+              orgInfo.setIsActive(userOrg.getIsActive());
+              organizations.add(orgInfo);
+            }
+          }
+        }
+      }
+
+      log.info(
+          "evt=get_user_organizations_success userId={} count={}", userId, organizations.size());
+      return new UserOrganizationsResponse(organizations);
+
+    } catch (UserException e) {
+      throw e;
+    } catch (Exception e) {
+      log.error("evt=get_user_organizations_error userId={} error={}", userId, e.getMessage(), e);
+      throw UserException.databaseError("Failed to get user organizations", e);
+    }
+  }
+
   private UserInfo convertToUserInfo(User user) {
     UserInfo userInfo = new UserInfo();
     userInfo.setUserId(user.getUserId());
     userInfo.setEmail(user.getEmail());
     userInfo.setName(user.getName());
-    userInfo.setUserType(user.getUserType());
     userInfo.setPhoneNumber(user.getPhoneNumber());
     return userInfo;
+  }
+
+  /** Validate that the requesting user has access to the organization */
+  private void validateOrganizationAccess(String requestingUserId, String organizationId) {
+    try {
+      Optional<User> userOpt = getUserById(requestingUserId);
+      if (userOpt.isEmpty()) {
+        log.error(
+            "evt=validate_org_access_user_not_found requestingUserId={} organizationId={}",
+            requestingUserId,
+            organizationId);
+        throw new AuthException("ACCESS_DENIED", "User not found", 403);
+      }
+
+      User user = userOpt.get();
+      if (!organizationId.equals(user.getOrganizationId())) {
+        log.error(
+            "evt=validate_org_access_denied requestingUserId={} userOrgId={} requestedOrgId={}",
+            requestingUserId,
+            user.getOrganizationId(),
+            organizationId);
+        throw new AuthException("ACCESS_DENIED", "You can only access your own organization", 403);
+      }
+
+      log.debug(
+          "evt=validate_org_access_success requestingUserId={} organizationId={}",
+          requestingUserId,
+          organizationId);
+    } catch (AuthException e) {
+      throw e;
+    } catch (Exception e) {
+      log.error(
+          "evt=validate_org_access_error requestingUserId={} organizationId={} error={}",
+          requestingUserId,
+          organizationId,
+          e.getMessage(),
+          e);
+      throw new AuthException("ACCESS_DENIED", "Failed to validate organization access", 403);
+    }
+  }
+
+  /** Require that the requesting user is a coach */
+  private void requireCoachPermission(String requestingUserId, String organizationId) {
+    try {
+      Optional<User> userOpt = getUserById(requestingUserId);
+      if (userOpt.isEmpty()) {
+        log.error(
+            "evt=require_coach_permission_user_not_found requestingUserId={} organizationId={}",
+            requestingUserId,
+            organizationId);
+        throw new AuthException("ACCESS_DENIED", "User not found", 403);
+      }
+
+      User user = userOpt.get();
+      if (!UserType.COACH.name().equals(user.getUserType())) {
+        log.error(
+            "evt=require_coach_permission_denied requestingUserId={} userType={} organizationId={}",
+            requestingUserId,
+            user.getUserType(),
+            organizationId);
+        throw new AuthException("ACCESS_DENIED", "Coach permission required", 403);
+      }
+
+      log.debug(
+          "evt=require_coach_permission_granted requestingUserId={} organizationId={}",
+          requestingUserId,
+          organizationId);
+    } catch (AuthException e) {
+      throw e;
+    } catch (Exception e) {
+      log.error(
+          "evt=require_coach_permission_error requestingUserId={} organizationId={} error={}",
+          requestingUserId,
+          organizationId,
+          e.getMessage(),
+          e);
+      throw new AuthException("ACCESS_DENIED", "Failed to validate coach permission", 403);
+    }
   }
 }

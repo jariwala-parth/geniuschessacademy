@@ -27,12 +27,12 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/api/v1/enrollments")
+@RequestMapping("/api/v1/organizations/{organizationId}/enrollments")
 @CrossOrigin(origins = "*")
 @Slf4j
 @Tag(
     name = "Enrollment Management",
-    description = "APIs for managing student enrollments in batches")
+    description = "APIs for managing student enrollments in batches within organizations")
 public class EnrollmentController {
 
   @Autowired private EnrollmentService enrollmentService;
@@ -40,27 +40,34 @@ public class EnrollmentController {
   @PostMapping
   @Operation(
       summary = "Enroll a student in a batch",
-      description = "Create a new enrollment. Only coaches can enroll students.")
+      description =
+          "Create a new enrollment within an organization. Only coaches can enroll students.")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<EnrollmentResponseDTO> createEnrollment(
+      @PathVariable String organizationId,
       @RequestBody EnrollmentRequestDTO enrollmentRequest,
       @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
+
     log.info(
-        "evt=create_enrollment_request batchId={} studentId={} requestingUserId={}",
+        "evt=create_enrollment_request organizationId={} batchId={} studentId={}"
+            + " requestingUserId={}",
+        organizationId,
         enrollmentRequest.getBatchId(),
         enrollmentRequest.getStudentId(),
         userId);
     try {
       EnrollmentResponseDTO response =
-          enrollmentService.createEnrollment(enrollmentRequest, userId);
+          enrollmentService.createEnrollment(enrollmentRequest, userId, organizationId);
       log.info(
-          "evt=create_enrollment_success batchId={} studentId={}",
+          "evt=create_enrollment_success organizationId={} batchId={} studentId={}",
+          organizationId,
           response.getBatchId(),
           response.getStudentId());
       return ResponseEntity.status(HttpStatus.CREATED).body(response);
     } catch (Exception e) {
       log.error(
-          "evt=create_enrollment_error batchId={} studentId={}",
+          "evt=create_enrollment_error organizationId={} batchId={} studentId={}",
+          organizationId,
           enrollmentRequest.getBatchId(),
           enrollmentRequest.getStudentId(),
           e);
@@ -71,29 +78,39 @@ public class EnrollmentController {
   @PostMapping("/bulk")
   @Operation(
       summary = "Enroll multiple students in batches",
-      description = "Create multiple enrollments in one request. Only coaches can enroll students.")
+      description =
+          "Create multiple enrollments in one request within an organization. Only coaches can"
+              + " enroll students.")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<List<EnrollmentResponseDTO>> createBulkEnrollments(
+      @PathVariable String organizationId,
       @Parameter(hidden = true) @RequestAttribute("userId") String requestingUserId,
       @RequestBody List<EnrollmentRequestDTO> enrollmentRequests) {
 
     log.info(
-        "evt=create_bulk_enrollments_request userId={} count={}",
+        "evt=create_bulk_enrollments_request organizationId={} userId={} count={}",
+        organizationId,
         requestingUserId,
         enrollmentRequests.size());
 
     try {
       List<EnrollmentResponseDTO> results =
-          enrollmentService.createBulkEnrollments(enrollmentRequests, requestingUserId);
+          enrollmentService.createBulkEnrollments(
+              enrollmentRequests, requestingUserId, organizationId);
 
       log.info(
-          "evt=create_bulk_enrollments_response successful={} total_requested={}",
+          "evt=create_bulk_enrollments_response organizationId={} successful={} total_requested={}",
+          organizationId,
           results.size(),
           enrollmentRequests.size());
 
       return ResponseEntity.ok(results);
     } catch (Exception e) {
-      log.error("evt=create_bulk_enrollments_error userId={}", requestingUserId, e);
+      log.error(
+          "evt=create_bulk_enrollments_error organizationId={} userId={}",
+          organizationId,
+          requestingUserId,
+          e);
       return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
     }
   }
@@ -101,29 +118,46 @@ public class EnrollmentController {
   @GetMapping("/{batchId}/{studentId}")
   @Operation(
       summary = "Get enrollment by batch and student",
-      description = "Retrieve enrollment information for a specific student in a batch")
+      description =
+          "Retrieve enrollment information for a specific student in a batch within an"
+              + " organization")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<EnrollmentResponseDTO> getEnrollment(
+      @PathVariable String organizationId,
       @PathVariable String batchId,
       @PathVariable String studentId,
       @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
     log.info(
-        "evt=get_enrollment_request batchId={} studentId={} requestingUserId={}",
+        "evt=get_enrollment_request organizationId={} batchId={} studentId={} requestingUserId={}",
+        organizationId,
         batchId,
         studentId,
         userId);
     try {
       Optional<EnrollmentResponseDTO> enrollment =
-          enrollmentService.getEnrollment(batchId, studentId, userId);
+          enrollmentService.getEnrollment(batchId, studentId, userId, organizationId);
       if (enrollment.isPresent()) {
-        log.info("evt=get_enrollment_success batchId={} studentId={}", batchId, studentId);
+        log.info(
+            "evt=get_enrollment_success organizationId={} batchId={} studentId={}",
+            organizationId,
+            batchId,
+            studentId);
         return ResponseEntity.ok(enrollment.get());
       } else {
-        log.info("evt=get_enrollment_not_found batchId={} studentId={}", batchId, studentId);
+        log.info(
+            "evt=get_enrollment_not_found organizationId={} batchId={} studentId={}",
+            organizationId,
+            batchId,
+            studentId);
         return ResponseEntity.notFound().build();
       }
     } catch (Exception e) {
-      log.error("evt=get_enrollment_error batchId={} studentId={}", batchId, studentId, e);
+      log.error(
+          "evt=get_enrollment_error organizationId={} batchId={} studentId={}",
+          organizationId,
+          batchId,
+          studentId,
+          e);
       throw e;
     }
   }
@@ -131,17 +165,20 @@ public class EnrollmentController {
   @GetMapping
   @Operation(
       summary = "Get all enrollments",
-      description = "Retrieve all enrollments with optional filtering")
+      description = "Retrieve all enrollments with optional filtering within an organization")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<PageResponseDTO<EnrollmentResponseDTO>> getAllEnrollments(
+      @PathVariable String organizationId,
       @RequestParam(required = false) String batchId,
       @RequestParam(required = false) String studentId,
       @RequestParam(defaultValue = "0") int page,
       @RequestParam(defaultValue = "10") int size,
       @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
+
     log.info(
-        "evt=get_all_enrollments_request batchId={} studentId={} page={} size={}"
+        "evt=get_all_enrollments_request organizationId={} batchId={} studentId={} page={} size={}"
             + " requestingUserId={}",
+        organizationId,
         batchId,
         studentId,
         page,
@@ -150,13 +187,19 @@ public class EnrollmentController {
     try {
       PageResponseDTO<EnrollmentResponseDTO> response =
           enrollmentService.getAllEnrollments(
-              Optional.ofNullable(batchId), Optional.ofNullable(studentId), page, size, userId);
+              Optional.ofNullable(batchId),
+              Optional.ofNullable(studentId),
+              page,
+              size,
+              userId,
+              organizationId);
       log.info(
-          "evt=get_all_enrollments_success totalElements={}",
+          "evt=get_all_enrollments_success organizationId={} totalElements={}",
+          organizationId,
           response.getPageInfo().getTotalElements());
       return ResponseEntity.ok(response);
     } catch (Exception e) {
-      log.error("evt=get_all_enrollments_error", e);
+      log.error("evt=get_all_enrollments_error organizationId={}", organizationId, e);
       throw e;
     }
   }
@@ -164,30 +207,49 @@ public class EnrollmentController {
   @PutMapping("/{batchId}/{studentId}")
   @Operation(
       summary = "Update enrollment",
-      description = "Update an existing enrollment. Only coaches can update enrollments.")
+      description =
+          "Update an existing enrollment within an organization. Only coaches can update"
+              + " enrollments.")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<EnrollmentResponseDTO> updateEnrollment(
+      @PathVariable String organizationId,
       @PathVariable String batchId,
       @PathVariable String studentId,
       @RequestBody EnrollmentRequestDTO enrollmentRequest,
       @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
     log.info(
-        "evt=update_enrollment_request batchId={} studentId={} requestingUserId={}",
+        "evt=update_enrollment_request organizationId={} batchId={} studentId={}"
+            + " requestingUserId={}",
+        organizationId,
         batchId,
         studentId,
         userId);
     try {
       Optional<EnrollmentResponseDTO> response =
-          enrollmentService.updateEnrollment(batchId, studentId, enrollmentRequest, userId);
+          enrollmentService.updateEnrollment(
+              batchId, studentId, enrollmentRequest, userId, organizationId);
       if (response.isPresent()) {
-        log.info("evt=update_enrollment_success batchId={} studentId={}", batchId, studentId);
+        log.info(
+            "evt=update_enrollment_success organizationId={} batchId={} studentId={}",
+            organizationId,
+            batchId,
+            studentId);
         return ResponseEntity.ok(response.get());
       } else {
-        log.info("evt=update_enrollment_not_found batchId={} studentId={}", batchId, studentId);
+        log.info(
+            "evt=update_enrollment_not_found organizationId={} batchId={} studentId={}",
+            organizationId,
+            batchId,
+            studentId);
         return ResponseEntity.notFound().build();
       }
     } catch (Exception e) {
-      log.error("evt=update_enrollment_error batchId={} studentId={}", batchId, studentId, e);
+      log.error(
+          "evt=update_enrollment_error organizationId={} batchId={} studentId={}",
+          organizationId,
+          batchId,
+          studentId,
+          e);
       throw e;
     }
   }
@@ -195,28 +257,47 @@ public class EnrollmentController {
   @DeleteMapping("/{batchId}/{studentId}")
   @Operation(
       summary = "Delete enrollment",
-      description = "Remove a student from a batch. Only coaches can delete enrollments.")
+      description =
+          "Remove a student from a batch within an organization. Only coaches can delete"
+              + " enrollments.")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<Void> deleteEnrollment(
+      @PathVariable String organizationId,
       @PathVariable String batchId,
       @PathVariable String studentId,
       @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
     log.info(
-        "evt=delete_enrollment_request batchId={} studentId={} requestingUserId={}",
+        "evt=delete_enrollment_request organizationId={} batchId={} studentId={}"
+            + " requestingUserId={}",
+        organizationId,
         batchId,
         studentId,
         userId);
     try {
-      boolean deleted = enrollmentService.deleteEnrollment(batchId, studentId, userId);
+      boolean deleted =
+          enrollmentService.deleteEnrollment(batchId, studentId, userId, organizationId);
       if (deleted) {
-        log.info("evt=delete_enrollment_success batchId={} studentId={}", batchId, studentId);
+        log.info(
+            "evt=delete_enrollment_success organizationId={} batchId={} studentId={}",
+            organizationId,
+            batchId,
+            studentId);
         return ResponseEntity.noContent().build();
       } else {
-        log.info("evt=delete_enrollment_not_found batchId={} studentId={}", batchId, studentId);
+        log.info(
+            "evt=delete_enrollment_not_found organizationId={} batchId={} studentId={}",
+            organizationId,
+            batchId,
+            studentId);
         return ResponseEntity.notFound().build();
       }
     } catch (Exception e) {
-      log.error("evt=delete_enrollment_error batchId={} studentId={}", batchId, studentId, e);
+      log.error(
+          "evt=delete_enrollment_error organizationId={} batchId={} studentId={}",
+          organizationId,
+          batchId,
+          studentId,
+          e);
       throw e;
     }
   }
@@ -224,29 +305,37 @@ public class EnrollmentController {
   @GetMapping("/batch/{batchId}")
   @Operation(
       summary = "Get enrollments by batch",
-      description = "Retrieve all enrollments for a specific batch")
+      description = "Retrieve all enrollments for a specific batch within an organization")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<PageResponseDTO<EnrollmentResponseDTO>> getEnrollmentsByBatch(
+      @PathVariable String organizationId,
       @PathVariable String batchId,
       @RequestParam(defaultValue = "0") int page,
       @RequestParam(defaultValue = "10") int size,
       @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
     log.info(
-        "evt=get_enrollments_by_batch_request batchId={} page={} size={} requestingUserId={}",
+        "evt=get_enrollments_by_batch_request organizationId={} batchId={} page={} size={}"
+            + " requestingUserId={}",
+        organizationId,
         batchId,
         page,
         size,
         userId);
     try {
       PageResponseDTO<EnrollmentResponseDTO> response =
-          enrollmentService.getEnrollmentsByBatch(batchId, page, size, userId);
+          enrollmentService.getEnrollmentsByBatch(batchId, page, size, userId, organizationId);
       log.info(
-          "evt=get_enrollments_by_batch_success batchId={} totalElements={}",
+          "evt=get_enrollments_by_batch_success organizationId={} batchId={} totalElements={}",
+          organizationId,
           batchId,
           response.getPageInfo().getTotalElements());
       return ResponseEntity.ok(response);
     } catch (Exception e) {
-      log.error("evt=get_enrollments_by_batch_error batchId={}", batchId, e);
+      log.error(
+          "evt=get_enrollments_by_batch_error organizationId={} batchId={}",
+          organizationId,
+          batchId,
+          e);
       throw e;
     }
   }
@@ -254,29 +343,37 @@ public class EnrollmentController {
   @GetMapping("/student/{studentId}")
   @Operation(
       summary = "Get enrollments by student",
-      description = "Retrieve all enrollments for a specific student")
+      description = "Retrieve all enrollments for a specific student within an organization")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<PageResponseDTO<EnrollmentResponseDTO>> getEnrollmentsByStudent(
+      @PathVariable String organizationId,
       @PathVariable String studentId,
       @RequestParam(defaultValue = "0") int page,
       @RequestParam(defaultValue = "10") int size,
       @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
     log.info(
-        "evt=get_enrollments_by_student_request studentId={} page={} size={} requestingUserId={}",
+        "evt=get_enrollments_by_student_request organizationId={} studentId={} page={} size={}"
+            + " requestingUserId={}",
+        organizationId,
         studentId,
         page,
         size,
         userId);
     try {
       PageResponseDTO<EnrollmentResponseDTO> response =
-          enrollmentService.getEnrollmentsByStudent(studentId, page, size, userId);
+          enrollmentService.getEnrollmentsByStudent(studentId, page, size, userId, organizationId);
       log.info(
-          "evt=get_enrollments_by_student_success studentId={} totalElements={}",
+          "evt=get_enrollments_by_student_success organizationId={} studentId={} totalElements={}",
+          organizationId,
           studentId,
           response.getPageInfo().getTotalElements());
       return ResponseEntity.ok(response);
     } catch (Exception e) {
-      log.error("evt=get_enrollments_by_student_error studentId={}", studentId, e);
+      log.error(
+          "evt=get_enrollments_by_student_error organizationId={} studentId={}",
+          organizationId,
+          studentId,
+          e);
       throw e;
     }
   }

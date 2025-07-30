@@ -1,9 +1,7 @@
 package com.pjariwala.service.impl;
 
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBMapper;
-import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBQueryExpression;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBScanExpression;
-import com.amazonaws.services.dynamodbv2.datamodeling.PaginatedQueryList;
 import com.amazonaws.services.dynamodbv2.datamodeling.PaginatedScanList;
 import com.amazonaws.services.dynamodbv2.model.AttributeValue;
 import com.pjariwala.dto.EnrollmentRequestDTO;
@@ -21,6 +19,7 @@ import com.pjariwala.model.User;
 import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.EnrollmentService;
 import com.pjariwala.service.UserService;
+import com.pjariwala.util.ValidationUtil;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -39,49 +38,53 @@ public class EnrollmentServiceImpl implements EnrollmentService {
   @Autowired private DynamoDBMapper dynamoDBMapper;
   @Autowired private UserService userService;
   @Autowired private ActivityLogService activityLogService;
+  @Autowired private ValidationUtil validationUtil;
 
   @Override
   public EnrollmentResponseDTO createEnrollment(
-      EnrollmentRequestDTO enrollmentRequest, String requestingUserId) {
+      EnrollmentRequestDTO enrollmentRequest, String requestingUserId, String organizationId) {
     log.info(
-        "evt=create_enrollment_start batchId={} studentId={} requestingUserId={}",
+        "evt=create_enrollment_start batchId={} studentId={} requestingUserId={} organizationId={}",
         enrollmentRequest.getBatchId(),
         enrollmentRequest.getStudentId(),
-        requestingUserId);
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
     // Authorization: Only coaches can enroll students
-    requireCoachPermission(requestingUserId);
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
 
     validateEnrollmentRequest(enrollmentRequest);
 
     // Check if enrollment already exists
-    if (isStudentEnrolled(enrollmentRequest.getBatchId(), enrollmentRequest.getStudentId())) {
+    if (isStudentEnrolled(
+        enrollmentRequest.getBatchId(), enrollmentRequest.getStudentId(), organizationId)) {
       log.error(
-          "evt=create_enrollment_already_exists batchId={} studentId={}",
+          "evt=create_enrollment_already_exists batchId={} studentId={} organizationId={}",
           enrollmentRequest.getBatchId(),
-          enrollmentRequest.getStudentId());
+          enrollmentRequest.getStudentId(),
+          organizationId);
       throw UserException.userExists("Student is already enrolled in this batch");
     }
 
     // Verify batch and student exist
-    validateBatchAndStudent(enrollmentRequest.getBatchId(), enrollmentRequest.getStudentId());
+    validateBatchAndStudent(
+        enrollmentRequest.getBatchId(), enrollmentRequest.getStudentId(), organizationId);
 
     Enrollment enrollment =
         Enrollment.builder()
+            .organizationId(organizationId)
+            .enrollmentId(
+                enrollmentRequest.getBatchId()
+                    + ":"
+                    + enrollmentRequest.getStudentId()) // Composite enrollmentId
             .batchId(enrollmentRequest.getBatchId())
             .studentId(enrollmentRequest.getStudentId())
-            .enrollmentDate(
-                enrollmentRequest.getEnrollmentDate() != null
-                    ? enrollmentRequest.getEnrollmentDate()
-                    : java.time.LocalDate.now())
-            .enrollmentStatus(
-                enrollmentRequest.getEnrollmentStatus() != null
-                    ? enrollmentRequest.getEnrollmentStatus()
-                    : Enrollment.EnrollmentStatus.ENROLLED)
-            .enrollmentPaymentStatus(
-                enrollmentRequest.getEnrollmentPaymentStatus() != null
-                    ? enrollmentRequest.getEnrollmentPaymentStatus()
-                    : Enrollment.PaymentStatus.PENDING)
+            .enrollmentDate(enrollmentRequest.getEnrollmentDate())
+            .enrollmentStatus(enrollmentRequest.getEnrollmentStatus())
+            .enrollmentPaymentStatus(enrollmentRequest.getEnrollmentPaymentStatus())
             .currentPaymentAmount(enrollmentRequest.getCurrentPaymentAmount())
             .notes(enrollmentRequest.getNotes())
             .createdAt(LocalDateTime.now())
@@ -91,57 +94,88 @@ public class EnrollmentServiceImpl implements EnrollmentService {
     try {
       dynamoDBMapper.save(enrollment);
       log.info(
-          "evt=create_enrollment_success batchId={} studentId={}",
+          "evt=create_enrollment_success batchId={} studentId={} organizationId={}",
           enrollment.getBatchId(),
-          enrollment.getStudentId());
+          enrollment.getStudentId(),
+          organizationId);
 
       // Log enrollment activity
       try {
-        User coach = getUser(requestingUserId);
-        User student = getUser(enrollment.getStudentId());
+        User coach = getUser(requestingUserId, organizationId);
+        User student = getUser(enrollmentRequest.getStudentId(), organizationId);
+        Batch batch = getBatch(enrollmentRequest.getBatchId(), organizationId);
         activityLogService.logEnrollment(
-            coach.getUserId(), coach.getName(),
-            student.getUserId(), student.getName(),
-            enrollment.getBatchId(), "Batch" // We'll get the actual batch name if needed
-            );
+            coach.getUserId(),
+            coach.getName(),
+            student.getUserId(),
+            student.getName(),
+            batch.getBatchId(),
+            batch.getBatchName(),
+            organizationId);
       } catch (Exception e) {
         log.warn(
-            "Failed to log enrollment activity for batch: {} student: {}",
-            enrollment.getBatchId(),
-            enrollment.getStudentId(),
+            "Failed to log enrollment activity for batch: {} student: {} organizationId={}",
+            enrollmentRequest.getBatchId(),
+            enrollmentRequest.getStudentId(),
+            organizationId,
             e);
       }
 
       return convertToResponseDTO(enrollment);
     } catch (Exception e) {
-      log.error("evt=create_enrollment_error", e);
+      log.error(
+          "evt=create_enrollment_error batchId={} studentId={} organizationId={} error={}",
+          enrollmentRequest.getBatchId(),
+          enrollmentRequest.getStudentId(),
+          organizationId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to create enrollment", e);
     }
   }
 
   @Override
   public Optional<EnrollmentResponseDTO> getEnrollment(
-      String batchId, String studentId, String requestingUserId) {
+      String batchId, String studentId, String requestingUserId, String organizationId) {
     log.info(
-        "evt=get_enrollment_start batchId={} studentId={} requestingUserId={}",
+        "evt=get_enrollment_start batchId={} studentId={} requestingUserId={} organizationId={}",
         batchId,
         studentId,
-        requestingUserId);
+        requestingUserId,
+        organizationId);
 
-    // Authorization: Students can only view their own enrollments, coaches can view all
-    requireStudentAccessOrCoach(requestingUserId, studentId);
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+
+    // Validate user access - students can only view their own enrollments, coaches can view all
+    validationUtil.validateUserAccess(requestingUserId, studentId, organizationId);
 
     try {
-      Enrollment enrollment = dynamoDBMapper.load(Enrollment.class, batchId, studentId);
-      if (enrollment != null) {
-        log.info("evt=get_enrollment_success batchId={} studentId={}", batchId, studentId);
+      String enrollmentId = batchId + ":" + studentId;
+      Enrollment enrollment = dynamoDBMapper.load(Enrollment.class, organizationId, enrollmentId);
+      if (enrollment != null && organizationId.equals(enrollment.getOrganizationId())) {
+        log.info(
+            "evt=get_enrollment_success batchId={} studentId={} organizationId={}",
+            batchId,
+            studentId,
+            organizationId);
         return Optional.of(convertToResponseDTO(enrollment));
       } else {
-        log.info("evt=get_enrollment_not_found batchId={} studentId={}", batchId, studentId);
+        log.info(
+            "evt=get_enrollment_not_found batchId={} studentId={} organizationId={}",
+            batchId,
+            studentId,
+            organizationId);
         return Optional.empty();
       }
     } catch (Exception e) {
-      log.error("evt=get_enrollment_error batchId={} studentId={}", batchId, studentId, e);
+      log.error(
+          "evt=get_enrollment_error batchId={} studentId={} organizationId={} error={}",
+          batchId,
+          studentId,
+          organizationId,
+          e.getMessage(),
+          e);
       return Optional.empty();
     }
   }
@@ -152,24 +186,32 @@ public class EnrollmentServiceImpl implements EnrollmentService {
       Optional<String> studentId,
       int page,
       int size,
-      String requestingUserId) {
+      String requestingUserId,
+      String organizationId) {
     log.info(
-        "evt=get_all_enrollments_start batchId={} studentId={} page={} size={} requestingUserId={}",
+        "evt=get_all_enrollments_start batchId={} studentId={} page={} size={} requestingUserId={}"
+            + " organizationId={}",
         batchId.orElse(null),
         studentId.orElse(null),
         page,
         size,
-        requestingUserId);
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
     // Authorization: Students can only see their own enrollments
-    User requestingUser = getUser(requestingUserId);
-    if (!"COACH".equals(requestingUser.getUserType())) {
+    User requestingUser = getUser(requestingUserId, organizationId);
+    if (!UserType.COACH.name().equals(requestingUser.getUserType())) {
       // Force studentId to be the requesting user for students
       if (studentId.isEmpty() || !studentId.get().equals(requestingUserId)) {
         log.warn(
-            "evt=get_all_enrollments_access_denied userId={} requestedStudentId={}",
+            "evt=get_all_enrollments_access_denied userId={} requestedStudentId={}"
+                + " organizationId={}",
             requestingUserId,
-            studentId.orElse("none"));
+            studentId.orElse("none"),
+            organizationId);
         throw new AuthException(
             "ACCESS_DENIED", "Students can only access their own enrollments", 403);
       }
@@ -182,19 +224,25 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         // Get specific enrollment
         Enrollment enrollment =
             dynamoDBMapper.load(Enrollment.class, batchId.get(), studentId.get());
-        if (enrollment != null) {
+        if (enrollment != null && organizationId.equals(enrollment.getOrganizationId())) {
           allEnrollments.add(enrollment);
         }
       } else if (batchId.isPresent()) {
         // Get enrollments by batch
-        allEnrollments = getEnrollmentsByBatchFromDb(batchId.get());
+        allEnrollments = getEnrollmentsByBatchFromDb(batchId.get(), organizationId);
       } else if (studentId.isPresent()) {
         // Get enrollments by student
-        allEnrollments = getEnrollmentsByStudentFromDb(studentId.get());
+        allEnrollments = getEnrollmentsByStudentFromDb(studentId.get(), organizationId);
       } else {
         // Get all enrollments (only for coaches)
-        if ("COACH".equals(requestingUser.getUserType())) {
-          DynamoDBScanExpression scanExpression = new DynamoDBScanExpression();
+        if (UserType.COACH.name().equals(requestingUser.getUserType())) {
+          Map<String, AttributeValue> eav = new HashMap<>();
+          eav.put(":organizationId", new AttributeValue().withS(organizationId));
+
+          DynamoDBScanExpression scanExpression =
+              new DynamoDBScanExpression()
+                  .withFilterExpression("organizationId = :organizationId")
+                  .withExpressionAttributeValues(eav);
           PaginatedScanList<Enrollment> scanResult =
               dynamoDBMapper.scan(Enrollment.class, scanExpression);
           allEnrollments = new ArrayList<>(scanResult);
@@ -220,10 +268,17 @@ public class EnrollmentServiceImpl implements EnrollmentService {
           new PageResponseDTO.PageInfoDTO(
               page, size, (totalElements + size - 1) / size, totalElements);
 
-      log.info("evt=get_all_enrollments_success totalElements={}", totalElements);
+      log.info(
+          "evt=get_all_enrollments_success totalElements={} organizationId={}",
+          totalElements,
+          organizationId);
       return new PageResponseDTO<>(enrollmentDTOs, pageInfo);
     } catch (Exception e) {
-      log.error("evt=get_all_enrollments_error", e);
+      log.error(
+          "evt=get_all_enrollments_error organizationId={} error={}",
+          organizationId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to retrieve enrollments", e);
     }
   }
@@ -233,20 +288,32 @@ public class EnrollmentServiceImpl implements EnrollmentService {
       String batchId,
       String studentId,
       EnrollmentRequestDTO enrollmentRequest,
-      String requestingUserId) {
+      String requestingUserId,
+      String organizationId) {
     log.info(
-        "evt=update_enrollment_start batchId={} studentId={} requestingUserId={}",
+        "evt=update_enrollment_start batchId={} studentId={} requestingUserId={} organizationId={}",
         batchId,
         studentId,
-        requestingUserId);
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
     // Authorization: Only coaches can update enrollments
-    requireCoachPermission(requestingUserId);
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
 
     try {
-      Enrollment existingEnrollment = dynamoDBMapper.load(Enrollment.class, batchId, studentId);
-      if (existingEnrollment == null) {
-        log.info("evt=update_enrollment_not_found batchId={} studentId={}", batchId, studentId);
+      String enrollmentId = batchId + ":" + studentId;
+      Enrollment existingEnrollment =
+          dynamoDBMapper.load(Enrollment.class, organizationId, enrollmentId);
+      if (existingEnrollment == null
+          || !organizationId.equals(existingEnrollment.getOrganizationId())) {
+        log.info(
+            "evt=update_enrollment_not_found batchId={} studentId={} organizationId={}",
+            batchId,
+            studentId,
+            organizationId);
         return Optional.empty();
       }
 
@@ -272,39 +339,65 @@ public class EnrollmentServiceImpl implements EnrollmentService {
       existingEnrollment.setUpdatedAt(LocalDateTime.now());
 
       dynamoDBMapper.save(existingEnrollment);
-      log.info("evt=update_enrollment_success batchId={} studentId={}", batchId, studentId);
+      log.info(
+          "evt=update_enrollment_success batchId={} studentId={} organizationId={}",
+          batchId,
+          studentId,
+          organizationId);
       return Optional.of(convertToResponseDTO(existingEnrollment));
     } catch (Exception e) {
-      log.error("evt=update_enrollment_error batchId={} studentId={}", batchId, studentId, e);
+      log.error(
+          "evt=update_enrollment_error batchId={} studentId={} organizationId={} error={}",
+          batchId,
+          studentId,
+          organizationId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to update enrollment", e);
     }
   }
 
   @Override
-  public boolean deleteEnrollment(String batchId, String studentId, String requestingUserId) {
+  public boolean deleteEnrollment(
+      String batchId, String studentId, String requestingUserId, String organizationId) {
     log.info(
-        "evt=delete_enrollment_start batchId={} studentId={} requestingUserId={}",
+        "evt=delete_enrollment_start batchId={} studentId={} requestingUserId={} organizationId={}",
         batchId,
         studentId,
-        requestingUserId);
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
     // Authorization: Only coaches can delete enrollments
-    requireCoachPermission(requestingUserId);
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
 
     try {
-      Enrollment existingEnrollment = dynamoDBMapper.load(Enrollment.class, batchId, studentId);
-      if (existingEnrollment == null) {
-        log.info("evt=delete_enrollment_not_found batchId={} studentId={}", batchId, studentId);
+      String enrollmentId = batchId + ":" + studentId;
+      Enrollment existingEnrollment =
+          dynamoDBMapper.load(Enrollment.class, organizationId, enrollmentId);
+      if (existingEnrollment == null
+          || !organizationId.equals(existingEnrollment.getOrganizationId())) {
+        log.info(
+            "evt=delete_enrollment_not_found batchId={} studentId={} organizationId={}",
+            batchId,
+            studentId,
+            organizationId);
         return false;
       }
 
       dynamoDBMapper.delete(existingEnrollment);
-      log.info("evt=delete_enrollment_success batchId={} studentId={}", batchId, studentId);
+      log.info(
+          "evt=delete_enrollment_success batchId={} studentId={} organizationId={}",
+          batchId,
+          studentId,
+          organizationId);
 
       // Log enrollment removal activity
       try {
-        User coach = getUser(requestingUserId);
-        User student = getUser(studentId);
+        User coach = getUser(requestingUserId, organizationId);
+        User student = getUser(studentId, organizationId);
         activityLogService.logAction(
             ActionType.REMOVE_ENROLLMENT,
             coach.getUserId(),
@@ -313,133 +406,110 @@ public class EnrollmentServiceImpl implements EnrollmentService {
             String.format("Removed %s from batch", student.getName()),
             EntityType.ENROLLMENT,
             batchId + ":" + studentId,
-            String.format("%s -> Batch", student.getName()));
+            String.format("%s -> Batch", student.getName()),
+            organizationId);
       } catch (Exception e) {
         log.warn(
-            "Failed to log enrollment removal activity for batch: {} student: {}",
+            "Failed to log enrollment removal activity for batch: {} student: {} organizationId={}",
             batchId,
             studentId,
+            organizationId,
             e);
       }
 
       return true;
     } catch (Exception e) {
-      log.error("evt=delete_enrollment_error batchId={} studentId={}", batchId, studentId, e);
+      log.error(
+          "evt=delete_enrollment_error batchId={} studentId={} organizationId={} error={}",
+          batchId,
+          studentId,
+          organizationId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to delete enrollment", e);
     }
   }
 
   @Override
   public PageResponseDTO<EnrollmentResponseDTO> getEnrollmentsByBatch(
-      String batchId, int page, int size, String requestingUserId) {
+      String batchId, int page, int size, String requestingUserId, String organizationId) {
     log.info(
-        "evt=get_enrollments_by_batch_start batchId={} page={} size={} requestingUserId={}",
+        "evt=get_enrollments_by_batch_start batchId={} page={} size={} requestingUserId={}"
+            + " organizationId={}",
         batchId,
         page,
         size,
-        requestingUserId);
+        requestingUserId,
+        organizationId);
 
-    // Authorization: Coaches can see all enrollments, students can only see their own if they're in
-    // the batch
-    User requestingUser = getUser(requestingUserId);
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+
+    // Only coaches can view batch enrollments
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
 
     try {
-      List<Enrollment> enrollments = getEnrollmentsByBatchFromDb(batchId);
-
-      // Filter for non-coach users
-      if (!"COACH".equals(requestingUser.getUserType())) {
-        enrollments =
-            enrollments.stream()
-                .filter(enrollment -> enrollment.getStudentId().equals(requestingUserId))
-                .collect(Collectors.toList());
-      }
-
-      // Apply pagination
-      int totalElements = enrollments.size();
-      int startIndex = page * size;
-      int endIndex = Math.min(startIndex + size, totalElements);
-
-      List<Enrollment> paginatedEnrollments =
-          startIndex < totalElements
-              ? enrollments.subList(startIndex, endIndex)
-              : new ArrayList<>();
-
-      List<EnrollmentResponseDTO> enrollmentDTOs =
-          paginatedEnrollments.stream()
-              .map(this::convertToResponseDTO)
-              .collect(Collectors.toList());
-
-      PageResponseDTO.PageInfoDTO pageInfo =
-          new PageResponseDTO.PageInfoDTO(
-              page, size, (totalElements + size - 1) / size, totalElements);
-
-      log.info(
-          "evt=get_enrollments_by_batch_success batchId={} totalElements={}",
-          batchId,
-          totalElements);
-      return new PageResponseDTO<>(enrollmentDTOs, pageInfo);
+      List<Enrollment> enrollments = getEnrollmentsByBatchFromDb(batchId, organizationId);
+      return paginateResults(enrollments, page, size);
     } catch (Exception e) {
-      log.error("evt=get_enrollments_by_batch_error batchId={}", batchId, e);
+      log.error(
+          "evt=get_enrollments_by_batch_error batchId={} organizationId={} error={}",
+          batchId,
+          organizationId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to retrieve enrollments by batch", e);
     }
   }
 
   @Override
   public PageResponseDTO<EnrollmentResponseDTO> getEnrollmentsByStudent(
-      String studentId, int page, int size, String requestingUserId) {
+      String studentId, int page, int size, String requestingUserId, String organizationId) {
     log.info(
-        "evt=get_enrollments_by_student_start studentId={} page={} size={} requestingUserId={}",
+        "evt=get_enrollments_by_student_start studentId={} page={} size={} requestingUserId={}"
+            + " organizationId={}",
         studentId,
         page,
         size,
-        requestingUserId);
+        requestingUserId,
+        organizationId);
 
-    // Authorization: Students can only view their own enrollments, coaches can view any
-    requireStudentAccessOrCoach(requestingUserId, studentId);
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+
+    // Validate user access - students can only view their own enrollments, coaches can view any
+    validationUtil.validateUserAccess(requestingUserId, studentId, organizationId);
 
     try {
-      List<Enrollment> enrollments = getEnrollmentsByStudentFromDb(studentId);
-
-      // Apply pagination
-      int totalElements = enrollments.size();
-      int startIndex = page * size;
-      int endIndex = Math.min(startIndex + size, totalElements);
-
-      List<Enrollment> paginatedEnrollments =
-          startIndex < totalElements
-              ? enrollments.subList(startIndex, endIndex)
-              : new ArrayList<>();
-
-      List<EnrollmentResponseDTO> enrollmentDTOs =
-          paginatedEnrollments.stream()
-              .map(this::convertToResponseDTO)
-              .collect(Collectors.toList());
-
-      PageResponseDTO.PageInfoDTO pageInfo =
-          new PageResponseDTO.PageInfoDTO(
-              page, size, (totalElements + size - 1) / size, totalElements);
-
-      log.info(
-          "evt=get_enrollments_by_student_success studentId={} totalElements={}",
-          studentId,
-          totalElements);
-      return new PageResponseDTO<>(enrollmentDTOs, pageInfo);
+      List<Enrollment> enrollments = getEnrollmentsByStudentFromDb(studentId, organizationId);
+      return paginateResults(enrollments, page, size);
     } catch (Exception e) {
-      log.error("evt=get_enrollments_by_student_error studentId={}", studentId, e);
+      log.error(
+          "evt=get_enrollments_by_student_error studentId={} organizationId={} error={}",
+          studentId,
+          organizationId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to retrieve enrollments by student", e);
     }
   }
 
   @Override
   public List<EnrollmentResponseDTO> createBulkEnrollments(
-      List<EnrollmentRequestDTO> enrollmentRequests, String requestingUserId) {
+      List<EnrollmentRequestDTO> enrollmentRequests,
+      String requestingUserId,
+      String organizationId) {
     log.info(
-        "evt=create_bulk_enrollments_start count={} requestingUserId={}",
+        "evt=create_bulk_enrollments_start count={} requestingUserId={} organizationId={}",
         enrollmentRequests.size(),
-        requestingUserId);
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
     // Authorization: Only coaches can enroll students
-    requireCoachPermission(requestingUserId);
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
 
     List<EnrollmentResponseDTO> results = new ArrayList<>();
     List<String> errors = new ArrayList<>();
@@ -450,7 +520,7 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         validateEnrollmentRequest(request);
 
         // Check if enrollment already exists
-        if (isStudentEnrolled(request.getBatchId(), request.getStudentId())) {
+        if (isStudentEnrolled(request.getBatchId(), request.getStudentId(), organizationId)) {
           errors.add(
               String.format(
                   "Student %s already enrolled in batch %s",
@@ -459,24 +529,18 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         }
 
         // Verify batch and student exist
-        validateBatchAndStudent(request.getBatchId(), request.getStudentId());
+        validateBatchAndStudent(request.getBatchId(), request.getStudentId(), organizationId);
 
         Enrollment enrollment =
             Enrollment.builder()
+                .organizationId(organizationId)
+                .enrollmentId(
+                    request.getBatchId() + ":" + request.getStudentId()) // Composite enrollmentId
                 .batchId(request.getBatchId())
                 .studentId(request.getStudentId())
-                .enrollmentDate(
-                    request.getEnrollmentDate() != null
-                        ? request.getEnrollmentDate()
-                        : java.time.LocalDate.now())
-                .enrollmentStatus(
-                    request.getEnrollmentStatus() != null
-                        ? request.getEnrollmentStatus()
-                        : Enrollment.EnrollmentStatus.ENROLLED)
-                .enrollmentPaymentStatus(
-                    request.getEnrollmentPaymentStatus() != null
-                        ? request.getEnrollmentPaymentStatus()
-                        : Enrollment.PaymentStatus.PENDING)
+                .enrollmentDate(request.getEnrollmentDate())
+                .enrollmentStatus(request.getEnrollmentStatus())
+                .enrollmentPaymentStatus(request.getEnrollmentPaymentStatus())
                 .currentPaymentAmount(request.getCurrentPaymentAmount())
                 .notes(request.getNotes())
                 .createdAt(LocalDateTime.now())
@@ -486,17 +550,29 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         dynamoDBMapper.save(enrollment);
         results.add(convertToResponseDTO(enrollment));
 
-        log.info(
-            "evt=bulk_enrollment_success batchId={} studentId={}",
-            enrollment.getBatchId(),
-            enrollment.getStudentId());
+        // Log enrollment activity
+        try {
+          User coach = getUser(requestingUserId, organizationId);
+          User student = getUser(request.getStudentId(), organizationId);
+          Batch batch = getBatch(request.getBatchId(), organizationId);
+          activityLogService.logEnrollment(
+              coach.getUserId(),
+              coach.getName(),
+              student.getUserId(),
+              student.getName(),
+              batch.getBatchId(),
+              batch.getBatchName(),
+              organizationId);
+        } catch (Exception e) {
+          log.warn(
+              "Failed to log bulk enrollment activity for batch: {} student: {} organizationId={}",
+              request.getBatchId(),
+              request.getStudentId(),
+              organizationId,
+              e);
+        }
 
       } catch (Exception e) {
-        log.error(
-            "evt=bulk_enrollment_error batchId={} studentId={}",
-            request.getBatchId(),
-            request.getStudentId(),
-            e);
         errors.add(
             String.format(
                 "Failed to enroll student %s in batch %s: %s",
@@ -504,134 +580,132 @@ public class EnrollmentServiceImpl implements EnrollmentService {
       }
     }
 
+    if (!errors.isEmpty()) {
+      log.warn(
+          "evt=create_bulk_enrollments_errors organizationId={} errors={}", organizationId, errors);
+    }
+
     log.info(
-        "evt=create_bulk_enrollments_complete successful={} failed={}",
+        "evt=create_bulk_enrollments_success organizationId={} successful={} errors={}",
+        organizationId,
         results.size(),
         errors.size());
-
-    // Log bulk enrollment activity
-    try {
-      User coach = getUser(requestingUserId);
-      activityLogService.logAction(
-          ActionType.BULK_ENROLLMENT,
-          coach.getUserId(),
-          coach.getName(),
-          UserType.COACH,
-          String.format("Bulk enrolled %d students", results.size()),
-          EntityType.ENROLLMENT,
-          null,
-          null);
-    } catch (Exception e) {
-      log.warn("Failed to log bulk enrollment activity for coach: {}", requestingUserId, e);
-    }
-
-    if (!errors.isEmpty()) {
-      log.warn("evt=create_bulk_enrollments_partial_failure errors={}", String.join("; ", errors));
-      // For bulk operations, we return partial success rather than throwing
-      // The caller can check the result count vs request count
-    }
-
     return results;
   }
 
-  public boolean isStudentEnrolled(String batchId, String studentId) {
+  @Override
+  public int countActiveEnrollmentsByBatch(String batchId, String organizationId) {
     try {
-      Enrollment enrollment = dynamoDBMapper.load(Enrollment.class, batchId, studentId);
-      return enrollment != null
-          && enrollment.getEnrollmentStatus() == Enrollment.EnrollmentStatus.ENROLLED;
+      List<Enrollment> enrollments = getEnrollmentsByBatchFromDb(batchId, organizationId);
+      return (int)
+          enrollments.stream().filter(e -> "ENROLLED".equals(e.getEnrollmentStatus())).count();
     } catch (Exception e) {
-      log.error("evt=is_student_enrolled_error batchId={} studentId={}", batchId, studentId, e);
-      return false;
+      log.error(
+          "evt=count_active_enrollments_error batchId={} organizationId={} error={}",
+          batchId,
+          organizationId,
+          e.getMessage(),
+          e);
+      return 0;
     }
   }
 
   @Override
-  public int countActiveEnrollmentsByBatch(String batchId) {
-    log.debug("evt=count_active_enrollments_request batchId={}", batchId);
-
-    Map<String, AttributeValue> eav = new HashMap<>();
-    eav.put(":batchId", new AttributeValue().withS(batchId));
-    eav.put(":enrolledStatus", new AttributeValue().withS("ENROLLED"));
-
-    DynamoDBQueryExpression<Enrollment> queryExpression =
-        new DynamoDBQueryExpression<Enrollment>()
-            .withKeyConditionExpression("batchId = :batchId")
-            .withFilterExpression("enrollmentStatus = :enrolledStatus")
-            .withExpressionAttributeValues(eav);
-
-    PaginatedQueryList<Enrollment> queryResult =
-        dynamoDBMapper.query(Enrollment.class, queryExpression);
-
-    int count = queryResult.size();
-    log.debug("evt=count_active_enrollments_success batchId={} count={}", batchId, count);
-    return count;
-  }
-
-  private void validateEnrollmentRequest(EnrollmentRequestDTO request) {
-    log.debug("evt=validate_enrollment_request_start");
-
-    if (request.getBatchId() == null || request.getBatchId().trim().isEmpty()) {
-      throw UserException.validationError("Batch ID is required");
-    }
-    if (request.getStudentId() == null || request.getStudentId().trim().isEmpty()) {
-      throw UserException.validationError("Student ID is required");
-    }
-
-    // Validate batch and student exist
-    validateBatchAndStudent(request.getBatchId(), request.getStudentId());
-
-    log.debug("evt=validate_enrollment_request_success");
-  }
-
-  private void validateBatchAndStudent(String batchId, String studentId) {
-    log.debug("evt=validate_batch_and_student_start batchId={} studentId={}", batchId, studentId);
-
+  public List<String> getEnrolledBatchIdsForStudent(String studentId, String organizationId) {
     try {
-      // Check if batch exists
-      Batch batch = dynamoDBMapper.load(Batch.class, batchId);
-      if (batch == null) {
-        log.error("evt=validate_batch_not_found batchId={}", batchId);
-        throw UserException.userNotFound("Batch not found: " + batchId);
-      }
-
-      if (batch.getBatchStatus() == BatchStatus.CANCELLED) {
-        log.error("evt=validate_batch_cancelled batchId={}", batchId);
-        throw UserException.validationError("Cannot enroll in cancelled batch: " + batchId);
-      }
-
-      // Check if student exists
-      User student = dynamoDBMapper.load(User.class, studentId, "STUDENT");
-      if (student == null) {
-        log.error("evt=validate_student_not_found studentId={}", studentId);
-        throw UserException.userNotFound("Student not found: " + studentId);
-      }
-
-      if (student.getIsActive() != null && !student.getIsActive()) {
-        log.error("evt=validate_student_inactive studentId={}", studentId);
-        throw UserException.validationError("Cannot enroll inactive student: " + studentId);
-      }
-
-      // Check if batch is full using dynamic count
-      int currentStudents = countActiveEnrollmentsByBatch(batchId);
-      if (batch.getBatchSize() != null && currentStudents >= batch.getBatchSize()) {
-        log.error(
-            "evt=validate_batch_full batchId={} current={} max={}",
-            batchId,
-            currentStudents,
-            batch.getBatchSize());
-        throw UserException.validationError(
-            "Batch is full (capacity: " + batch.getBatchSize() + ")");
-      }
-
-      log.debug(
-          "evt=validate_batch_and_student_success batchId={} studentId={}", batchId, studentId);
-    } catch (UserException e) {
-      throw e;
+      List<Enrollment> enrollments = getEnrollmentsByStudentFromDb(studentId, organizationId);
+      return enrollments.stream()
+          .filter(e -> "ENROLLED".equals(e.getEnrollmentStatus()))
+          .map(Enrollment::getBatchId)
+          .collect(Collectors.toList());
     } catch (Exception e) {
       log.error(
-          "evt=validate_batch_and_student_error batchId={} studentId={}", batchId, studentId, e);
-      throw UserException.databaseError("Failed to validate batch and student", e);
+          "evt=get_enrolled_batch_ids_error studentId={} organizationId={} error={}",
+          studentId,
+          organizationId,
+          e.getMessage(),
+          e);
+      return new ArrayList<>();
     }
+  }
+
+  @Override
+  public boolean isStudentEnrolled(String batchId, String studentId, String organizationId) {
+    try {
+      // Use scan to find enrollment by batchId, studentId, and organizationId
+      Map<String, AttributeValue> eav = new HashMap<>();
+      eav.put(":batchId", new AttributeValue().withS(batchId));
+      eav.put(":studentId", new AttributeValue().withS(studentId));
+      eav.put(":organizationId", new AttributeValue().withS(organizationId));
+
+      DynamoDBScanExpression scanExpression =
+          new DynamoDBScanExpression()
+              .withFilterExpression(
+                  "batchId = :batchId AND studentId = :studentId AND organizationId ="
+                      + " :organizationId")
+              .withExpressionAttributeValues(eav);
+
+      PaginatedScanList<Enrollment> results = dynamoDBMapper.scan(Enrollment.class, scanExpression);
+      return !results.isEmpty() && "ENROLLED".equals(results.get(0).getEnrollmentStatus().name());
+    } catch (Exception e) {
+      log.error(
+          "evt=is_student_enrolled_error batchId={} studentId={} organizationId={} error={}",
+          batchId,
+          studentId,
+          organizationId,
+          e.getMessage(),
+          e);
+      return false;
+    }
+  }
+
+  // Helper methods
+
+  private List<Enrollment> getEnrollmentsByBatchFromDb(String batchId, String organizationId) {
+    Map<String, AttributeValue> eav = new HashMap<>();
+    eav.put(":batchId", new AttributeValue().withS(batchId));
+    eav.put(":organizationId", new AttributeValue().withS(organizationId));
+
+    DynamoDBScanExpression scanExpression =
+        new DynamoDBScanExpression()
+            .withFilterExpression("batchId = :batchId AND organizationId = :organizationId")
+            .withExpressionAttributeValues(eav);
+
+    PaginatedScanList<Enrollment> results = dynamoDBMapper.scan(Enrollment.class, scanExpression);
+    return new ArrayList<>(results);
+  }
+
+  private List<Enrollment> getEnrollmentsByStudentFromDb(String studentId, String organizationId) {
+    Map<String, AttributeValue> eav = new HashMap<>();
+    eav.put(":studentId", new AttributeValue().withS(studentId));
+    eav.put(":organizationId", new AttributeValue().withS(organizationId));
+
+    DynamoDBScanExpression scanExpression =
+        new DynamoDBScanExpression()
+            .withFilterExpression("studentId = :studentId AND organizationId = :organizationId")
+            .withExpressionAttributeValues(eav);
+
+    PaginatedScanList<Enrollment> results = dynamoDBMapper.scan(Enrollment.class, scanExpression);
+    return new ArrayList<>(results);
+  }
+
+  private PageResponseDTO<EnrollmentResponseDTO> paginateResults(
+      List<Enrollment> enrollments, int page, int size) {
+    int totalElements = enrollments.size();
+    int startIndex = page * size;
+    int endIndex = Math.min(startIndex + size, totalElements);
+
+    List<Enrollment> paginatedEnrollments =
+        startIndex < totalElements ? enrollments.subList(startIndex, endIndex) : new ArrayList<>();
+
+    List<EnrollmentResponseDTO> enrollmentDTOs =
+        paginatedEnrollments.stream().map(this::convertToResponseDTO).collect(Collectors.toList());
+
+    PageResponseDTO.PageInfoDTO pageInfo =
+        new PageResponseDTO.PageInfoDTO(
+            page, size, (totalElements + size - 1) / size, totalElements);
+
+    return new PageResponseDTO<>(enrollmentDTOs, pageInfo);
   }
 
   private EnrollmentResponseDTO convertToResponseDTO(Enrollment enrollment) {
@@ -646,134 +720,159 @@ public class EnrollmentServiceImpl implements EnrollmentService {
     dto.setCreatedAt(enrollment.getCreatedAt());
     dto.setUpdatedAt(enrollment.getUpdatedAt());
 
-    // Enrich with batch and student names (optional - could be optimized)
-    try {
-      Batch batch = dynamoDBMapper.load(Batch.class, enrollment.getBatchId());
-      if (batch != null) {
-        dto.setBatchName(batch.getBatchName());
-      }
-
-      User student = dynamoDBMapper.load(User.class, enrollment.getStudentId(), "STUDENT");
-      if (student != null) {
-        dto.setStudentName(student.getName());
-      }
-    } catch (Exception e) {
-      log.warn("evt=enrich_enrollment_response_warning", e);
-      // Continue without enrichment
-    }
-
+    // Note: organizationId is not included in the DTO as it's internal
     return dto;
   }
 
-  /** Get user by ID and throw exception if not found */
-  private User getUser(String userId) {
-    // Try both COACH and STUDENT types since we don't know which type the user is
-    User user = userService.getUserById(userId, "COACH");
-    if (user == null) {
-      user = userService.getUserById(userId, "STUDENT");
-    }
-    if (user == null) {
-      log.error("evt=get_user_error userId={} msg=user_not_found", userId);
-      throw AuthException.invalidToken();
-    }
-    return user;
-  }
+  private void validateEnrollmentRequest(EnrollmentRequestDTO request) {
+    log.debug("evt=validate_enrollment_request_start");
 
-  /** Require that the requesting user is a coach */
-  private void requireCoachPermission(String userId) {
-    User user = getUser(userId);
-    if (!"COACH".equals(user.getUserType())) {
-      log.error(
-          "evt=require_coach_permission_error userId={} userType={} msg=access_denied",
-          userId,
-          user.getUserType());
-      throw new AuthException("ACCESS_DENIED", "Only coaches can perform this action", 403);
-    }
-    log.debug("evt=require_coach_permission_success userId={}", userId);
-  }
-
-  /**
-   * Require that the requesting user can access student data (either the student themselves or a
-   * coach)
-   */
-  private void requireStudentAccessOrCoach(String requestingUserId, String studentId) {
-    User requestingUser = getUser(requestingUserId);
-
-    // Coaches can access any student data
-    if ("COACH".equals(requestingUser.getUserType())) {
-      log.debug(
-          "evt=require_student_access_success userId={} role=coach studentId={}",
-          requestingUserId,
-          studentId);
-      return;
+    if (request.getBatchId() == null || request.getBatchId().trim().isEmpty()) {
+      throw UserException.validationError("Batch ID is required");
     }
 
-    // Students can only access their own data
-    if (!requestingUserId.equals(studentId)) {
-      log.error(
-          "evt=require_student_access_error userId={} studentId={} msg=access_denied",
-          requestingUserId,
-          studentId);
-      throw new AuthException("ACCESS_DENIED", "You can only access your own data", 403);
+    if (request.getStudentId() == null || request.getStudentId().trim().isEmpty()) {
+      throw UserException.validationError("Student ID is required");
     }
 
-    log.debug("evt=require_student_access_success userId={} role=student", requestingUserId);
+    if (request.getEnrollmentDate() == null) {
+      throw UserException.validationError("Enrollment date is required");
+    }
+
+    if (request.getEnrollmentStatus() == null) {
+      throw UserException.validationError("Enrollment status is required");
+    }
+
+    if (request.getEnrollmentPaymentStatus() == null) {
+      throw UserException.validationError("Enrollment payment status is required");
+    }
+
+    if (request.getCurrentPaymentAmount() == null || request.getCurrentPaymentAmount() < 0) {
+      throw UserException.validationError("Current payment amount must be non-negative");
+    }
+
+    log.debug("evt=validate_enrollment_request_success");
   }
 
-  private List<Enrollment> getEnrollmentsByBatchFromDb(String batchId) {
-    Map<String, AttributeValue> eav = new HashMap<>();
-    eav.put(":batchId", new AttributeValue().withS(batchId));
-
-    DynamoDBQueryExpression<Enrollment> queryExpression =
-        new DynamoDBQueryExpression<Enrollment>()
-            .withKeyConditionExpression("batchId = :batchId")
-            .withExpressionAttributeValues(eav);
-
-    PaginatedQueryList<Enrollment> queryResult =
-        dynamoDBMapper.query(Enrollment.class, queryExpression);
-    return new ArrayList<>(queryResult);
-  }
-
-  private List<Enrollment> getEnrollmentsByStudentFromDb(String studentId) {
-    Map<String, AttributeValue> eav = new HashMap<>();
-    eav.put(":studentId", new AttributeValue().withS(studentId));
-
-    DynamoDBQueryExpression<Enrollment> queryExpression =
-        new DynamoDBQueryExpression<Enrollment>()
-            .withIndexName("studentId-batchId-index")
-            .withConsistentRead(false)
-            .withKeyConditionExpression("studentId = :studentId")
-            .withExpressionAttributeValues(eav);
-
-    PaginatedQueryList<Enrollment> queryResult =
-        dynamoDBMapper.query(Enrollment.class, queryExpression);
-    return new ArrayList<>(queryResult);
-  }
-
-  @Override
-  public List<String> getEnrolledBatchIdsForStudent(String studentId) {
-    log.debug("evt=get_enrolled_batch_ids_for_student studentId={}", studentId);
+  private void validateBatchAndStudent(String batchId, String studentId, String organizationId) {
+    log.debug(
+        "evt=validate_batch_and_student_start batchId={} studentId={} organizationId={}",
+        batchId,
+        studentId,
+        organizationId);
 
     try {
-      List<Enrollment> enrollments = getEnrollmentsByStudentFromDb(studentId);
+      // Check if batch exists
+      Batch batch = dynamoDBMapper.load(Batch.class, organizationId, batchId);
+      if (batch == null) {
+        log.error(
+            "evt=validate_batch_not_found batchId={} organizationId={}", batchId, organizationId);
+        throw UserException.userNotFound("Batch not found: " + batchId);
+      }
 
-      // Filter for active enrollments and extract batch IDs
-      List<String> batchIds =
-          enrollments.stream()
-              .filter(
-                  enrollment ->
-                      enrollment.getEnrollmentStatus() == Enrollment.EnrollmentStatus.ENROLLED)
-              .map(Enrollment::getBatchId)
-              .toList();
+      if (batch.getBatchStatus() == BatchStatus.CANCELLED) {
+        log.error(
+            "evt=validate_batch_cancelled batchId={} organizationId={}", batchId, organizationId);
+        throw UserException.validationError("Cannot enroll in cancelled batch: " + batchId);
+      }
+
+      // Check if student exists
+      User student = getUser(studentId, organizationId);
+      if (student == null) {
+        log.error(
+            "evt=validate_student_not_found studentId={} organizationId={}",
+            studentId,
+            organizationId);
+        throw UserException.userNotFound("Student not found: " + studentId);
+      }
+
+      if (student.getIsActive() != null && !student.getIsActive()) {
+        log.error(
+            "evt=validate_student_inactive studentId={} organizationId={}",
+            studentId,
+            organizationId);
+        throw UserException.validationError("Cannot enroll inactive student: " + studentId);
+      }
+
+      // Check if batch is full using dynamic count
+      int currentStudents = countActiveEnrollmentsByBatch(batchId, organizationId);
+      if (batch.getBatchSize() != null && currentStudents >= batch.getBatchSize()) {
+        log.error(
+            "evt=validate_batch_full batchId={} current={} max={} organizationId={}",
+            batchId,
+            currentStudents,
+            batch.getBatchSize(),
+            organizationId);
+        throw UserException.validationError(
+            "Batch is full (capacity: " + batch.getBatchSize() + ")");
+      }
 
       log.debug(
-          "evt=get_enrolled_batch_ids_for_student_success studentId={} batchCount={}",
+          "evt=validate_batch_and_student_success batchId={} studentId={} organizationId={}",
+          batchId,
           studentId,
-          batchIds.size());
-      return batchIds;
+          organizationId);
+    } catch (UserException e) {
+      throw e;
     } catch (Exception e) {
-      log.error("evt=get_enrolled_batch_ids_for_student_error studentId={}", studentId, e);
-      throw UserException.databaseError("Failed to get enrolled batch IDs for student", e);
+      log.error(
+          "evt=validate_batch_and_student_error batchId={} studentId={} organizationId={} error={}",
+          batchId,
+          studentId,
+          organizationId,
+          e.getMessage(),
+          e);
+      throw UserException.databaseError("Failed to validate batch and student", e);
+    }
+  }
+
+  private User getUser(String userId, String organizationId) {
+    try {
+      User user = userService.getUserById(userId).orElse(null);
+      if (user == null) {
+        throw UserException.userNotFound("User not found: " + userId);
+      }
+
+      if (!organizationId.equals(user.getOrganizationId())) {
+        throw UserException.validationError("User does not belong to this organization");
+      }
+
+      return user;
+    } catch (UserException e) {
+      throw e;
+    } catch (Exception e) {
+      log.error(
+          "evt=get_user_error userId={} organizationId={} error={}",
+          userId,
+          organizationId,
+          e.getMessage(),
+          e);
+      throw UserException.databaseError("Failed to retrieve user", e);
+    }
+  }
+
+  private Batch getBatch(String batchId, String organizationId) {
+    try {
+      Batch batch = dynamoDBMapper.load(Batch.class, organizationId, batchId);
+      if (batch == null) {
+        throw UserException.userNotFound("Batch not found: " + batchId);
+      }
+
+      if (!organizationId.equals(batch.getOrganizationId())) {
+        throw UserException.validationError("Batch does not belong to this organization");
+      }
+
+      return batch;
+    } catch (UserException e) {
+      throw e;
+    } catch (Exception e) {
+      log.error(
+          "evt=get_batch_error batchId={} organizationId={} error={}",
+          batchId,
+          organizationId,
+          e.getMessage(),
+          e);
+      throw UserException.databaseError("Failed to retrieve batch", e);
     }
   }
 }

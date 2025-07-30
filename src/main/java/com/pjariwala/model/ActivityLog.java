@@ -25,10 +25,13 @@ import lombok.NoArgsConstructor;
 @DynamoDBTable(tableName = "GCA_ActivityLogs")
 public class ActivityLog {
 
-  @DynamoDBHashKey(attributeName = "logId")
+  @DynamoDBHashKey(attributeName = "organizationId")
+  private String organizationId;
+
+  @DynamoDBRangeKey(attributeName = "logId")
   private String logId;
 
-  @DynamoDBRangeKey(attributeName = "timestamp")
+  @DynamoDBAttribute(attributeName = "timestamp")
   @DynamoDBTypeConverted(converter = LocalDateTimeConverter.class)
   private LocalDateTime timestamp;
 

@@ -15,16 +15,20 @@ import com.pjariwala.enums.ActionType;
 import com.pjariwala.enums.EntityType;
 import com.pjariwala.enums.InvoiceStatus;
 import com.pjariwala.enums.UserType;
+import com.pjariwala.exception.AuthException;
+import com.pjariwala.exception.UserException;
 import com.pjariwala.model.Batch;
 import com.pjariwala.model.Invoice;
 import com.pjariwala.model.Invoice.InvoiceItem;
+import com.pjariwala.model.User;
 import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.AttendanceService;
 import com.pjariwala.service.BatchService;
 import com.pjariwala.service.InvoiceService;
+import com.pjariwala.service.UserService;
+import com.pjariwala.util.ValidationUtil;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -34,44 +38,40 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.web.server.ResponseStatusException;
 
 @Service
 @Slf4j
 public class InvoiceServiceImpl implements InvoiceService {
 
   @Autowired private DynamoDBMapper dynamoDBMapper;
-
   @Autowired private AttendanceService attendanceService;
-
   @Autowired private BatchService batchService;
-
   @Autowired private ActivityLogService activityLogService;
+  @Autowired private UserService userService;
+  @Autowired private ValidationUtil validationUtil;
 
   @Override
   public InvoiceDTO generateInvoice(
-      InvoiceGenerateRequest request, String coachId, String userType) {
+      InvoiceGenerateRequest request, String coachId, String organizationId) {
     log.info(
-        "evt=generate_invoice studentId={} batchId={} coachId={} userType={}",
+        "evt=generate_invoice studentId={} batchId={} coachId={} organizationId={}",
         request.getStudentId(),
         request.getBatchId(),
         coachId,
-        userType);
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(coachId, organizationId);
 
     // Validate that the requesting user is a coach
-    if (!"COACH".equals(userType)) {
-      log.error("evt=unauthorized_invoice_generation coachId={} userType={}", coachId, userType);
-      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only coaches can generate invoices");
-    }
+    validationUtil.requireCoachPermission(coachId, organizationId);
 
     // Get batch details
     Optional<BatchResponseDTO> batchResponse =
-        batchService.getBatchById(request.getBatchId(), "system");
+        batchService.getBatchById(request.getBatchId(), coachId, organizationId);
     if (batchResponse.isEmpty()) {
-      throw new ResponseStatusException(
-          HttpStatus.NOT_FOUND, "Batch not found: " + request.getBatchId());
+      throw UserException.userNotFound("Batch not found: " + request.getBatchId());
     }
     BatchResponseDTO batchResponseDTO = batchResponse.get();
 
@@ -84,7 +84,8 @@ public class InvoiceServiceImpl implements InvoiceService {
             request.getStudentId(),
             request.getBatchId(),
             request.getBillingPeriodStart().toString(),
-            request.getBillingPeriodEnd().toString());
+            request.getBillingPeriodEnd().toString(),
+            organizationId);
 
     // Create invoice items based on attendance
     List<InvoiceItem> items =
@@ -93,11 +94,13 @@ public class InvoiceServiceImpl implements InvoiceService {
             request.getBatchId(),
             request.getBillingPeriodStart(),
             request.getBillingPeriodEnd(),
-            batch);
+            batch,
+            organizationId);
 
     // Create invoice
     Invoice invoice =
         Invoice.builder()
+            .organizationId(organizationId)
             .studentId(request.getStudentId())
             .invoiceId(UUID.randomUUID().toString())
             .batchId(request.getBatchId())
@@ -118,40 +121,57 @@ public class InvoiceServiceImpl implements InvoiceService {
     dynamoDBMapper.save(invoice);
 
     // Log the activity
-    activityLogService.logAction(
-        ActionType.SYSTEM_ACTION,
-        coachId,
-        "Coach", // We'll need to get the actual coach name
-        UserType.COACH,
-        "Generated invoice for student " + request.getStudentId(),
-        EntityType.INVOICE,
-        invoice.getInvoiceId(),
-        "Invoice");
+    try {
+      User coach = getUser(coachId, organizationId);
+      activityLogService.logPayment(
+          coach.getUserId(),
+          coach.getName(),
+          UserType.COACH,
+          request.getStudentId(),
+          "Student", // We'll need to get the actual student name
+          request.getBatchId(),
+          batchResponseDTO.getBatchName(),
+          calculatedAmount,
+          organizationId);
+    } catch (Exception e) {
+      log.warn(
+          "Failed to log invoice generation activity for invoice: {} organizationId={}",
+          invoice.getInvoiceId(),
+          organizationId,
+          e);
+    }
 
-    log.info("evt=invoice_generated invoiceId={}", invoice.getInvoiceId());
+    log.info(
+        "evt=invoice_generated invoiceId={} organizationId={}",
+        invoice.getInvoiceId(),
+        organizationId);
 
     return convertToDTO(invoice);
   }
 
   @Override
   public InvoiceDTO recordPayment(
-      String invoiceId, PaymentRecordRequest request, String coachId, String userType) {
+      String invoiceId, PaymentRecordRequest request, String coachId, String organizationId) {
     log.info(
-        "evt=record_payment invoiceId={} amount={} coachId={} userType={}",
+        "evt=record_payment invoiceId={} coachId={} organizationId={}",
         invoiceId,
-        request.getAmountPaid(),
         coachId,
-        userType);
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(coachId, organizationId);
 
     // Validate that the requesting user is a coach
-    if (!"COACH".equals(userType)) {
-      log.error("evt=unauthorized_payment_record coachId={} userType={}", coachId, userType);
-      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only coaches can record payments");
+    validationUtil.requireCoachPermission(coachId, organizationId);
+
+    Invoice invoice = getInvoiceByIdInternal(invoiceId, organizationId);
+    if (invoice == null) {
+      throw UserException.userNotFound("Invoice not found: " + invoiceId);
     }
 
-    Invoice invoice = getInvoiceByIdInternal(invoiceId);
-    if (invoice == null) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Invoice not found: " + invoiceId);
+    // Validate organization access for the invoice
+    if (!organizationId.equals(invoice.getOrganizationId())) {
+      throw new AuthException("ACCESS_DENIED", "Invoice does not belong to this organization", 403);
     }
 
     // Update payment amount
@@ -170,42 +190,87 @@ public class InvoiceServiceImpl implements InvoiceService {
     dynamoDBMapper.save(invoice);
 
     // Log the activity
-    activityLogService.logPayment(
-        coachId,
-        "Coach", // We'll need to get the actual coach name
-        UserType.COACH,
-        invoice.getStudentId(),
-        "Student", // We'll need to get the actual student name
-        invoice.getBatchId(),
-        "Batch", // We'll need to get the actual batch name
-        request.getAmountPaid());
+    try {
+      User coach = getUser(coachId, organizationId);
+      activityLogService.logPayment(
+          coach.getUserId(),
+          coach.getName(),
+          UserType.COACH,
+          invoice.getStudentId(),
+          "Student", // We'll need to get the actual student name
+          invoice.getBatchId(),
+          "Batch", // We'll need to get the actual batch name
+          request.getAmountPaid(),
+          organizationId);
+    } catch (Exception e) {
+      log.warn(
+          "Failed to log payment activity for invoice: {} organizationId={}",
+          invoiceId,
+          organizationId,
+          e);
+    }
 
-    log.info("evt=payment_recorded invoiceId={}", invoiceId);
+    log.info(
+        "evt=payment_recorded invoiceId={} amount={} organizationId={}",
+        invoiceId,
+        request.getAmountPaid(),
+        organizationId);
 
     return convertToDTO(invoice);
   }
 
   @Override
-  public InvoiceDTO getInvoiceById(String invoiceId) {
-    log.info("evt=get_invoice_by_id invoiceId={}", invoiceId);
+  public InvoiceDTO getInvoiceById(
+      String invoiceId, String requestingUserId, String organizationId) {
+    log.info(
+        "evt=get_invoice_by_id invoiceId={} requestingUserId={} organizationId={}",
+        invoiceId,
+        requestingUserId,
+        organizationId);
 
-    Invoice invoice = getInvoiceByIdInternal(invoiceId);
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+
+    Invoice invoice = getInvoiceByIdInternal(invoiceId, organizationId);
 
     if (invoice == null) {
       return null;
     }
 
+    // Validate user access - students can only see their own invoices, coaches can see any
+    validationUtil.validateUserAccess(requestingUserId, invoice.getStudentId(), organizationId);
+
     return convertToDTO(invoice);
   }
 
   @Override
-  public PageResponseDTO<InvoiceDTO> getInvoicesByStudent(String studentId, int page, int size) {
-    log.info("evt=get_invoices_by_student studentId={} page={} size={}", studentId, page, size);
+  public PageResponseDTO<InvoiceDTO> getInvoicesByStudent(
+      String studentId, int page, int size, String requestingUserId, String organizationId) {
+    log.info(
+        "evt=get_invoices_by_student studentId={} page={} size={} requestingUserId={}"
+            + " organizationId={}",
+        studentId,
+        page,
+        size,
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+
+    // Validate user access - students can only see their own invoices, coaches can see any
+    validationUtil.validateUserAccess(requestingUserId, studentId, organizationId);
 
     // Create a query expression to find all invoices for the student
+    Map<String, AttributeValue> eav = new HashMap<>();
+    eav.put(":studentId", new AttributeValue().withS(studentId));
+    eav.put(":organizationId", new AttributeValue().withS(organizationId));
+
     DynamoDBQueryExpression<Invoice> queryExpression =
         new DynamoDBQueryExpression<Invoice>()
-            .withHashKeyValues(Invoice.builder().studentId(studentId).build());
+            .withKeyConditionExpression("studentId = :studentId")
+            .withFilterExpression("organizationId = :organizationId")
+            .withExpressionAttributeValues(eav);
 
     List<Invoice> invoices = dynamoDBMapper.query(Invoice.class, queryExpression);
 
@@ -227,6 +292,12 @@ public class InvoiceServiceImpl implements InvoiceService {
     response.setContent(invoiceDTOs);
     response.setPageInfo(pageInfo);
 
+    log.info(
+        "evt=get_invoices_by_student_success studentId={} organizationId={} count={}",
+        studentId,
+        organizationId,
+        invoices.size());
+
     return response;
   }
 
@@ -238,69 +309,69 @@ public class InvoiceServiceImpl implements InvoiceService {
       String batchId,
       String studentId,
       int page,
-      int size) {
+      int size,
+      String requestingUserId,
+      String organizationId) {
     log.info(
         "evt=get_all_invoices status={} dueDateStart={} dueDateEnd={} batchId={} studentId={}"
-            + " page={} size={}",
+            + " page={} size={} requestingUserId={} organizationId={}",
         status,
         dueDateStart,
         dueDateEnd,
         batchId,
         studentId,
         page,
-        size);
+        size,
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+
+    // Only coaches can view all invoices
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
 
     // Create a scan expression with filters
     Map<String, AttributeValue> expressionAttributeValues = new HashMap<>();
-    StringBuilder filterExpression = new StringBuilder();
+    StringBuilder filterExpression = new StringBuilder("organizationId = :organizationId");
+    expressionAttributeValues.put(":organizationId", new AttributeValue().withS(organizationId));
 
     if (status != null && !status.isEmpty()) {
-      filterExpression.append("status = :status");
+      filterExpression.append(" AND status = :status");
       expressionAttributeValues.put(":status", new AttributeValue().withS(status));
     }
 
     if (studentId != null && !studentId.isEmpty()) {
-      if (filterExpression.length() > 0) {
-        filterExpression.append(" AND ");
-      }
-      filterExpression.append("studentId = :studentId");
+      filterExpression.append(" AND studentId = :studentId");
       expressionAttributeValues.put(":studentId", new AttributeValue().withS(studentId));
     }
 
     if (batchId != null && !batchId.isEmpty()) {
-      if (filterExpression.length() > 0) {
-        filterExpression.append(" AND ");
-      }
-      filterExpression.append("batchId = :batchId");
+      filterExpression.append(" AND batchId = :batchId");
       expressionAttributeValues.put(":batchId", new AttributeValue().withS(batchId));
     }
 
-    DynamoDBScanExpression scanExpression = new DynamoDBScanExpression();
-    if (filterExpression.length() > 0) {
-      scanExpression.setFilterExpression(filterExpression.toString());
-      scanExpression.setExpressionAttributeValues(expressionAttributeValues);
-    }
+    DynamoDBScanExpression scanExpression =
+        new DynamoDBScanExpression()
+            .withFilterExpression(filterExpression.toString())
+            .withExpressionAttributeValues(expressionAttributeValues);
 
     List<Invoice> invoices = dynamoDBMapper.scan(Invoice.class, scanExpression);
 
     // Apply additional date filters if needed
     if (dueDateStart != null || dueDateEnd != null) {
-      DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+      LocalDate startDate = dueDateStart != null ? LocalDate.parse(dueDateStart) : null;
+      LocalDate endDate = dueDateEnd != null ? LocalDate.parse(dueDateEnd) : null;
+
       invoices =
           invoices.stream()
               .filter(
                   invoice -> {
-                    if (dueDateStart != null) {
-                      LocalDate startDate = LocalDate.parse(dueDateStart, formatter);
-                      if (invoice.getDueDate().isBefore(startDate)) {
-                        return false;
-                      }
+                    if (startDate != null && invoice.getDueDate().isBefore(startDate)) {
+                      return false;
                     }
-                    if (dueDateEnd != null) {
-                      LocalDate endDate = LocalDate.parse(dueDateEnd, formatter);
-                      if (invoice.getDueDate().isAfter(endDate)) {
-                        return false;
-                      }
+                    if (endDate != null && invoice.getDueDate().isAfter(endDate)) {
+                      return false;
                     }
                     return true;
                   })
@@ -325,24 +396,37 @@ public class InvoiceServiceImpl implements InvoiceService {
     response.setContent(invoiceDTOs);
     response.setPageInfo(pageInfo);
 
+    log.info(
+        "evt=get_all_invoices_success organizationId={} totalCount={}",
+        organizationId,
+        invoices.size());
+
     return response;
   }
 
   @Override
   public InvoiceDTO updateInvoice(
-      String invoiceId, InvoiceDTO invoiceDTO, String coachId, String userType) {
+      String invoiceId, InvoiceDTO invoiceDTO, String coachId, String organizationId) {
     log.info(
-        "evt=update_invoice invoiceId={} coachId={} userType={}", invoiceId, coachId, userType);
+        "evt=update_invoice invoiceId={} coachId={} organizationId={}",
+        invoiceId,
+        coachId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(coachId, organizationId);
 
     // Validate that the requesting user is a coach
-    if (!"COACH".equals(userType)) {
-      log.error("evt=unauthorized_invoice_update coachId={} userType={}", coachId, userType);
-      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only coaches can update invoices");
+    validationUtil.requireCoachPermission(coachId, organizationId);
+
+    Invoice invoice = getInvoiceByIdInternal(invoiceId, organizationId);
+    if (invoice == null) {
+      throw UserException.userNotFound("Invoice not found: " + invoiceId);
     }
 
-    Invoice invoice = getInvoiceByIdInternal(invoiceId);
-    if (invoice == null) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Invoice not found: " + invoiceId);
+    // Validate organization access for the invoice
+    if (!organizationId.equals(invoice.getOrganizationId())) {
+      throw new AuthException("ACCESS_DENIED", "Invoice does not belong to this organization", 403);
     }
 
     // Update fields
@@ -355,228 +439,259 @@ public class InvoiceServiceImpl implements InvoiceService {
     dynamoDBMapper.save(invoice);
 
     // Log the activity
-    activityLogService.logAction(
-        ActionType.SYSTEM_ACTION,
-        coachId,
-        "Coach", // We'll need to get the actual coach name
-        UserType.COACH,
-        "Updated invoice " + invoiceId,
-        EntityType.INVOICE,
-        invoiceId,
-        "Invoice");
+    try {
+      User coach = getUser(coachId, organizationId);
+      activityLogService.logAction(
+          ActionType.SYSTEM_ACTION,
+          coach.getUserId(),
+          coach.getName(),
+          UserType.COACH,
+          "Updated invoice " + invoiceId,
+          EntityType.INVOICE,
+          invoiceId,
+          "Invoice",
+          organizationId);
+    } catch (Exception e) {
+      log.warn(
+          "Failed to log invoice update activity for invoice: {} organizationId={}",
+          invoiceId,
+          organizationId,
+          e);
+    }
 
-    log.info("evt=invoice_updated invoiceId={}", invoiceId);
+    log.info("evt=invoice_updated invoiceId={} organizationId={}", invoiceId, organizationId);
 
     return convertToDTO(invoice);
   }
 
   @Override
-  public void deleteInvoice(String invoiceId, String coachId, String userType) {
+  public void deleteInvoice(String invoiceId, String coachId, String organizationId) {
     log.info(
-        "evt=delete_invoice invoiceId={} coachId={} userType={}", invoiceId, coachId, userType);
+        "evt=delete_invoice invoiceId={} coachId={} organizationId={}",
+        invoiceId,
+        coachId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(coachId, organizationId);
 
     // Validate that the requesting user is a coach
-    if (!"COACH".equals(userType)) {
-      log.error("evt=unauthorized_invoice_delete coachId={} userType={}", coachId, userType);
-      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only coaches can delete invoices");
+    validationUtil.requireCoachPermission(coachId, organizationId);
+
+    Invoice invoice = getInvoiceByIdInternal(invoiceId, organizationId);
+    if (invoice == null) {
+      throw UserException.userNotFound("Invoice not found: " + invoiceId);
     }
 
-    Invoice invoice = getInvoiceByIdInternal(invoiceId);
-    if (invoice == null) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Invoice not found: " + invoiceId);
+    // Validate organization access for the invoice
+    if (!organizationId.equals(invoice.getOrganizationId())) {
+      throw new AuthException("ACCESS_DENIED", "Invoice does not belong to this organization", 403);
     }
 
     dynamoDBMapper.delete(invoice);
 
     // Log the activity
-    activityLogService.logAction(
-        ActionType.SYSTEM_ACTION,
-        coachId,
-        "Coach", // We'll need to get the actual coach name
-        UserType.COACH,
-        "Deleted invoice " + invoiceId,
-        EntityType.INVOICE,
-        invoiceId,
-        "Invoice");
+    try {
+      User coach = getUser(coachId, organizationId);
+      activityLogService.logAction(
+          ActionType.SYSTEM_ACTION,
+          coach.getUserId(),
+          coach.getName(),
+          UserType.COACH,
+          "Deleted invoice " + invoiceId,
+          EntityType.INVOICE,
+          invoiceId,
+          "Invoice",
+          organizationId);
+    } catch (Exception e) {
+      log.warn(
+          "Failed to log invoice deletion activity for invoice: {} organizationId={}",
+          invoiceId,
+          organizationId,
+          e);
+    }
 
-    log.info("evt=invoice_deleted invoiceId={}", invoiceId);
+    log.info("evt=invoice_deleted invoiceId={} organizationId={}", invoiceId, organizationId);
   }
 
   @Override
-  public Double calculateFees(String studentId, String batchId, String startDate, String endDate) {
+  public Double calculateFees(
+      String studentId, String batchId, String startDate, String endDate, String organizationId) {
     log.info(
-        "evt=calculate_fees studentId={} batchId={} startDate={} endDate={}",
+        "evt=calculate_fees studentId={} batchId={} startDate={} endDate={} organizationId={}",
         studentId,
         batchId,
         startDate,
-        endDate);
+        endDate,
+        organizationId);
 
-    // Get batch details
-    Optional<BatchResponseDTO> batchResponse = batchService.getBatchById(batchId, "system");
-    if (batchResponse.isEmpty()) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Batch not found: " + batchId);
+    try {
+      // Get batch details
+      Optional<BatchResponseDTO> batchResponse =
+          batchService.getBatchById(batchId, "system", organizationId);
+      if (batchResponse.isEmpty()) {
+        throw UserException.userNotFound("Batch not found: " + batchId);
+      }
+
+      BatchResponseDTO batch = batchResponse.get();
+      LocalDate start = LocalDate.parse(startDate);
+      LocalDate end = LocalDate.parse(endDate);
+
+      // Get attendance for the period
+      PageResponseDTO<AttendanceDTO> attendanceResponse =
+          attendanceService.getAttendanceByStudent(studentId, 0, 1000, "system", organizationId);
+
+      List<AttendanceDTO> attendances = attendanceResponse.getContent();
+
+      // Filter attendances by date range
+      List<AttendanceDTO> periodAttendances =
+          attendances.stream()
+              .filter(
+                  attendance -> {
+                    LocalDate attendanceDate = attendance.getMarkedAt().toLocalDate();
+                    return !attendanceDate.isBefore(start) && !attendanceDate.isAfter(end);
+                  })
+              .collect(Collectors.toList());
+
+      // Calculate fees based on batch payment type
+      double totalFees = 0.0;
+
+      if ("FIXED_MONTHLY".equals(batch.getPaymentType())) {
+        // Fixed monthly fee
+        totalFees = batch.getFixedMonthlyFee() != null ? batch.getFixedMonthlyFee() : 0.0;
+      } else if ("PER_SESSION".equals(batch.getPaymentType())) {
+        // Per session fee
+        long attendedSessions =
+            periodAttendances.stream()
+                .filter(attendance -> Boolean.TRUE.equals(attendance.getIsPresent()))
+                .count();
+        totalFees =
+            attendedSessions * (batch.getPerSessionFee() != null ? batch.getPerSessionFee() : 0.0);
+      }
+
+      log.info(
+          "evt=calculate_fees_success studentId={} batchId={} organizationId={} totalFees={}",
+          studentId,
+          batchId,
+          organizationId,
+          totalFees);
+
+      return totalFees;
+    } catch (Exception e) {
+      log.error(
+          "evt=calculate_fees_error studentId={} batchId={} organizationId={} error={}",
+          studentId,
+          batchId,
+          organizationId,
+          e.getMessage(),
+          e);
+      throw UserException.databaseError("Failed to calculate fees", e);
     }
-    BatchResponseDTO batchResponseDTO = batchResponse.get();
-    Batch batch = convertToBatchModel(batchResponseDTO);
-
-    // Get attendance records for the period
-    PageResponseDTO<AttendanceDTO> attendanceResponse =
-        attendanceService.getAttendanceByStudent(studentId, 0, 1000);
-    List<AttendanceDTO> attendances = attendanceResponse.getContent();
-
-    // Filter attendances by date range and batch
-    DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
-    LocalDate start = LocalDate.parse(startDate, formatter);
-    LocalDate end = LocalDate.parse(endDate, formatter);
-
-    List<AttendanceDTO> filteredAttendances =
-        attendances.stream()
-            .filter(
-                attendance -> {
-                  // Check if attendance is for the specified batch (we need to get session details)
-                  // For now, we'll assume all attendances are for the specified batch
-                  return attendance.getMarkedAt().toLocalDate().isAfter(start.minusDays(1))
-                      && attendance.getMarkedAt().toLocalDate().isBefore(end.plusDays(1))
-                      && attendance.getIsPresent();
-                })
-            .collect(Collectors.toList());
-
-    // Calculate fees based on batch payment type
-    double totalFees = 0.0;
-
-    switch (batch.getPaymentType()) {
-      case PER_ATTENDANCE:
-        totalFees = filteredAttendances.size() * batch.getPerSessionFee();
-        break;
-      case PER_SESSION:
-        // Count unique sessions
-        long uniqueSessions =
-            filteredAttendances.stream().map(AttendanceDTO::getSessionId).distinct().count();
-        totalFees = uniqueSessions * batch.getPerSessionFee();
-        break;
-      case MONTHLY:
-      case FIXED_MONTHLY:
-        // Calculate number of months in the billing period
-        long months = java.time.temporal.ChronoUnit.MONTHS.between(start, end) + 1;
-        totalFees = months * batch.getFixedMonthlyFee();
-        break;
-      case ONE_TIME:
-        totalFees = batch.getPerSessionFee();
-        break;
-      default:
-        totalFees = 0.0;
-    }
-
-    log.info(
-        "evt=fees_calculated totalFees={} studentId={} batchId={}", totalFees, studentId, batchId);
-
-    return totalFees;
   }
 
-  private Invoice getInvoiceByIdInternal(String invoiceId) {
-    // Create a scan expression to find the invoice by ID
-    DynamoDBScanExpression scanExpression =
-        new DynamoDBScanExpression()
-            .withFilterExpression("invoiceId = :invoiceId")
-            .withExpressionAttributeValues(
-                Map.of(":invoiceId", new AttributeValue().withS(invoiceId)));
+  // Helper methods
 
-    List<Invoice> invoices = dynamoDBMapper.scan(Invoice.class, scanExpression);
+  private Invoice getInvoiceByIdInternal(String invoiceId, String organizationId) {
+    try {
+      // Use scan to find invoice by invoiceId and organizationId
+      Map<String, AttributeValue> eav = new HashMap<>();
+      eav.put(":invoiceId", new AttributeValue().withS(invoiceId));
+      eav.put(":organizationId", new AttributeValue().withS(organizationId));
 
-    if (invoices.isEmpty()) {
+      DynamoDBScanExpression scanExpression =
+          new DynamoDBScanExpression()
+              .withFilterExpression("invoiceId = :invoiceId AND organizationId = :organizationId")
+              .withExpressionAttributeValues(eav);
+
+      List<Invoice> results = dynamoDBMapper.scan(Invoice.class, scanExpression);
+      return results.isEmpty() ? null : results.get(0);
+    } catch (Exception e) {
+      log.error(
+          "evt=get_invoice_by_id_internal_error invoiceId={} organizationId={} error={}",
+          invoiceId,
+          organizationId,
+          e.getMessage(),
+          e);
       return null;
     }
-
-    return invoices.get(0);
   }
 
   private List<InvoiceItem> createInvoiceItems(
-      String studentId, String batchId, LocalDate startDate, LocalDate endDate, Batch batch) {
+      String studentId,
+      String batchId,
+      LocalDate startDate,
+      LocalDate endDate,
+      Batch batch,
+      String organizationId) {
+
     List<InvoiceItem> items = new ArrayList<>();
 
-    // Get attendance records for the period
-    PageResponseDTO<AttendanceDTO> attendanceResponse =
-        attendanceService.getAttendanceByStudent(studentId, 0, 1000);
-    List<AttendanceDTO> attendances = attendanceResponse.getContent();
+    try {
+      // Get attendance for the period
+      PageResponseDTO<AttendanceDTO> attendanceResponse =
+          attendanceService.getAttendanceByStudent(studentId, 0, 1000, "system", organizationId);
 
-    // Filter attendances by date range
-    List<AttendanceDTO> filteredAttendances =
-        attendances.stream()
-            .filter(
-                attendance -> {
-                  return attendance.getMarkedAt().toLocalDate().isAfter(startDate.minusDays(1))
-                      && attendance.getMarkedAt().toLocalDate().isBefore(endDate.plusDays(1))
-                      && attendance.getIsPresent();
-                })
-            .collect(Collectors.toList());
+      List<AttendanceDTO> attendances = attendanceResponse.getContent();
 
-    // Create invoice items based on payment type
-    switch (batch.getPaymentType()) {
-      case PER_ATTENDANCE:
-        for (AttendanceDTO attendance : filteredAttendances) {
+      // Filter attendances by date range
+      List<AttendanceDTO> periodAttendances =
+          attendances.stream()
+              .filter(
+                  attendance -> {
+                    LocalDate attendanceDate = attendance.getMarkedAt().toLocalDate();
+                    return !attendanceDate.isBefore(startDate) && !attendanceDate.isAfter(endDate);
+                  })
+              .collect(Collectors.toList());
+
+      // Create invoice items based on attendance
+      for (AttendanceDTO attendance : periodAttendances) {
+        if (Boolean.TRUE.equals(attendance.getIsPresent())) {
           InvoiceItem item =
               InvoiceItem.builder()
-                  .sessionId(attendance.getSessionId())
-                  .sessionDate(attendance.getMarkedAt().toLocalDate())
-                  .description("Attendance for session " + attendance.getSessionId())
-                  .amount(batch.getPerSessionFee())
-                  .type("ATTENDANCE")
-                  .build();
-          items.add(item);
-        }
-        break;
-      case PER_SESSION:
-        // Group by session
-        Map<String, List<AttendanceDTO>> sessionGroups =
-            filteredAttendances.stream()
-                .collect(Collectors.groupingBy(AttendanceDTO::getSessionId));
-
-        for (Map.Entry<String, List<AttendanceDTO>> entry : sessionGroups.entrySet()) {
-          InvoiceItem item =
-              InvoiceItem.builder()
-                  .sessionId(entry.getKey())
-                  .sessionDate(entry.getValue().get(0).getMarkedAt().toLocalDate())
-                  .description("Session " + entry.getKey())
-                  .amount(batch.getPerSessionFee())
+                  .description("Session on " + attendance.getMarkedAt().toLocalDate())
+                  .amount(batch.getPerSessionFee() != null ? batch.getPerSessionFee() : 0.0)
                   .type("SESSION")
                   .build();
           items.add(item);
         }
-        break;
-      case MONTHLY:
-      case FIXED_MONTHLY:
-        // Calculate number of months
-        long months = java.time.temporal.ChronoUnit.MONTHS.between(startDate, endDate) + 1;
+      }
+
+      // Add fixed monthly fee if applicable
+      if ("FIXED_MONTHLY".equals(batch.getPaymentType()) && batch.getFixedMonthlyFee() != null) {
         InvoiceItem item =
             InvoiceItem.builder()
-                .sessionId(null)
-                .sessionDate(startDate)
-                .description("Monthly fee for " + months + " month(s)")
-                .amount(months * batch.getFixedMonthlyFee())
-                .type("FIXED_MONTHLY")
+                .description("Monthly fee for " + startDate.getMonth() + " " + startDate.getYear())
+                .amount(batch.getFixedMonthlyFee())
+                .type("MONTHLY_FEE")
                 .build();
         items.add(item);
-        break;
-      case ONE_TIME:
-        InvoiceItem oneTimeItem =
-            InvoiceItem.builder()
-                .sessionId(null)
-                .sessionDate(startDate)
-                .description("One-time fee")
-                .amount(batch.getPerSessionFee())
-                .type("ONE_TIME")
-                .build();
-        items.add(oneTimeItem);
-        break;
+      }
+    } catch (Exception e) {
+      log.warn(
+          "Failed to create invoice items for student: {} batch: {} organizationId={}",
+          studentId,
+          batchId,
+          organizationId,
+          e);
     }
 
     return items;
   }
 
+  private Batch convertToBatchModel(BatchResponseDTO batchResponseDTO) {
+    return Batch.builder()
+        .batchId(batchResponseDTO.getBatchId())
+        .batchName(batchResponseDTO.getBatchName())
+        .paymentType(batchResponseDTO.getPaymentType())
+        .fixedMonthlyFee(batchResponseDTO.getFixedMonthlyFee())
+        .perSessionFee(batchResponseDTO.getPerSessionFee())
+        .build();
+  }
+
   private InvoiceDTO convertToDTO(Invoice invoice) {
     InvoiceDTO dto = new InvoiceDTO();
-    dto.setStudentId(invoice.getStudentId());
     dto.setInvoiceId(invoice.getInvoiceId());
+    dto.setStudentId(invoice.getStudentId());
     dto.setBatchId(invoice.getBatchId());
     dto.setBillingPeriodStart(invoice.getBillingPeriodStart());
     dto.setBillingPeriodEnd(invoice.getBillingPeriodEnd());
@@ -588,41 +703,44 @@ public class InvoiceServiceImpl implements InvoiceService {
     dto.setUpdatedAt(invoice.getUpdatedAt());
 
     // Convert invoice items
-    if (invoice.getItems() != null) {
-      dto.setItems(
-          invoice.getItems().stream().map(this::convertToItemDTO).collect(Collectors.toList()));
+    List<InvoiceItemDTO> itemDTOs =
+        invoice.getItems().stream()
+            .map(
+                item -> {
+                  InvoiceItemDTO itemDTO = new InvoiceItemDTO();
+                  itemDTO.setDescription(item.getDescription());
+                  itemDTO.setAmount(item.getAmount());
+                  itemDTO.setType(item.getType());
+                  return itemDTO;
+                })
+            .collect(Collectors.toList());
+    dto.setItems(itemDTOs);
+
+    return dto;
+  }
+
+  private User getUser(String userId, String organizationId) {
+    try {
+      User user = userService.getUserById(userId).orElse(null);
+      if (user == null) {
+        throw UserException.userNotFound("User not found: " + userId);
+      }
+
+      if (!organizationId.equals(user.getOrganizationId())) {
+        throw UserException.validationError("User does not belong to this organization");
+      }
+
+      return user;
+    } catch (UserException e) {
+      throw e;
+    } catch (Exception e) {
+      log.error(
+          "evt=get_user_error userId={} organizationId={} error={}",
+          userId,
+          organizationId,
+          e.getMessage(),
+          e);
+      throw UserException.databaseError("Failed to retrieve user", e);
     }
-
-    return dto;
-  }
-
-  private InvoiceItemDTO convertToItemDTO(InvoiceItem item) {
-    InvoiceItemDTO dto = new InvoiceItemDTO();
-    dto.setSessionId(item.getSessionId());
-    dto.setSessionDate(item.getSessionDate());
-    dto.setDescription(item.getDescription());
-    dto.setAmount(item.getAmount());
-    dto.setType(item.getType());
-    return dto;
-  }
-
-  private Batch convertToBatchModel(BatchResponseDTO batchResponseDTO) {
-    Batch batch = new Batch();
-    batch.setBatchId(batchResponseDTO.getBatchId());
-    batch.setBatchName(batchResponseDTO.getBatchName());
-    batch.setBatchSize(batchResponseDTO.getBatchSize());
-    // currentStudents is now calculated dynamically, not stored
-    batch.setStartDate(batchResponseDTO.getStartDate());
-    batch.setEndDate(batchResponseDTO.getEndDate());
-    batch.setPaymentType(batchResponseDTO.getPaymentType());
-    batch.setFixedMonthlyFee(batchResponseDTO.getFixedMonthlyFee());
-    batch.setPerSessionFee(batchResponseDTO.getPerSessionFee());
-    batch.setOccurrenceType(batchResponseDTO.getOccurrenceType());
-    batch.setBatchStatus(batchResponseDTO.getBatchStatus());
-    batch.setNotes(batchResponseDTO.getNotes());
-    batch.setCoachId(batchResponseDTO.getCoachId());
-    batch.setCreatedAt(batchResponseDTO.getCreatedAt());
-    batch.setUpdatedAt(batchResponseDTO.getUpdatedAt());
-    return batch;
   }
 }

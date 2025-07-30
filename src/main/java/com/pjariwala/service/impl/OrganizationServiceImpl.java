@@ -11,6 +11,7 @@ import com.pjariwala.dto.PageResponseDTO;
 import com.pjariwala.dto.SignupRequest;
 import com.pjariwala.dto.UserInfo;
 import com.pjariwala.enums.ActionType;
+import com.pjariwala.enums.EntityType;
 import com.pjariwala.enums.UserType;
 import com.pjariwala.exception.AuthException;
 import com.pjariwala.exception.UserException;
@@ -20,6 +21,7 @@ import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.AuthService;
 import com.pjariwala.service.OrganizationService;
 import com.pjariwala.service.UserService;
+import com.pjariwala.util.ValidationUtil;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -37,10 +39,10 @@ import org.springframework.stereotype.Service;
 public class OrganizationServiceImpl implements OrganizationService {
 
   @Autowired private DynamoDBMapper dynamoDBMapper;
-
   @Autowired private ActivityLogService activityLogService;
   @Autowired private UserService userService;
   @Autowired private AuthService authService;
+  @Autowired private ValidationUtil validationUtil;
 
   @Override
   public OrganizationResponseDTO createOrganization(
@@ -52,7 +54,7 @@ public class OrganizationServiceImpl implements OrganizationService {
         requestingUserId);
 
     // Authorization: Only SUPER_ADMIN users can create organizations
-    requireSuperAdminPermission(requestingUserId);
+    validationUtil.requireSuperAdminPermission(requestingUserId, "SYSTEM");
 
     validateOrganizationRequest(request);
 
@@ -77,27 +79,39 @@ public class OrganizationServiceImpl implements OrganizationService {
     try {
       dynamoDBMapper.save(organization);
       log.info(
-          "evt=create_organization_success organizationId={}", organization.getOrganizationId());
+          "evt=create_organization_success organizationId={} organizationName={}",
+          organization.getOrganizationId(),
+          organization.getOrganizationName());
 
       // Log organization creation activity
       try {
+        User admin = getUser(requestingUserId);
         activityLogService.logAction(
             ActionType.SYSTEM_ACTION,
-            requestingUserId,
-            "Admin",
-            UserType.COACH,
-            "Created organization: " + organization.getOrganizationName());
+            admin.getUserId(),
+            admin.getName(),
+            UserType.SUPER_ADMIN,
+            "Created organization: " + organization.getOrganizationName(),
+            EntityType.SYSTEM,
+            organization.getOrganizationId(),
+            organization.getOrganizationName(),
+            "SYSTEM");
       } catch (Exception e) {
         log.warn(
-            "Failed to log organization creation activity for organization: {}",
+            "Failed to log organization creation activity for organization: {} organizationName={}",
             organization.getOrganizationId(),
+            organization.getOrganizationName(),
             e);
       }
 
       return convertToResponseDTO(organization);
     } catch (Exception e) {
       log.error(
-          "evt=create_organization_error organizationName={}", request.getOrganizationName(), e);
+          "evt=create_organization_error organizationName={} requestingUserId={} error={}",
+          request.getOrganizationName(),
+          requestingUserId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to create organization", e);
     }
   }
@@ -129,10 +143,18 @@ public class OrganizationServiceImpl implements OrganizationService {
             "FORBIDDEN", "You don't have permission to view this organization", 403);
       }
 
-      log.info("evt=get_organization_by_id_success organizationId={}", organizationId);
+      log.info(
+          "evt=get_organization_by_id_success organizationId={} requestingUserId={}",
+          organizationId,
+          requestingUserId);
       return Optional.of(convertToResponseDTO(organization));
     } catch (Exception e) {
-      log.error("evt=get_organization_by_id_error organizationId={}", organizationId, e);
+      log.error(
+          "evt=get_organization_by_id_error organizationId={} requestingUserId={} error={}",
+          organizationId,
+          requestingUserId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to retrieve organization", e);
     }
   }
@@ -184,24 +206,40 @@ public class OrganizationServiceImpl implements OrganizationService {
       existingOrganization.setUpdatedAt(LocalDateTime.now());
 
       dynamoDBMapper.save(existingOrganization);
-      log.info("evt=update_organization_success organizationId={}", organizationId);
+      log.info(
+          "evt=update_organization_success organizationId={} requestingUserId={}",
+          organizationId,
+          requestingUserId);
 
       // Log organization update activity
       try {
+        User user = getUser(requestingUserId);
         activityLogService.logAction(
             ActionType.SYSTEM_ACTION,
-            requestingUserId,
-            "Admin",
-            UserType.COACH,
-            "Updated organization: " + existingOrganization.getOrganizationName());
+            user.getUserId(),
+            user.getName(),
+            UserType.SUPER_ADMIN,
+            "Updated organization: " + existingOrganization.getOrganizationName(),
+            EntityType.SYSTEM,
+            organizationId,
+            existingOrganization.getOrganizationName(),
+            "SYSTEM");
       } catch (Exception e) {
         log.warn(
-            "Failed to log organization update activity for organization: {}", organizationId, e);
+            "Failed to log organization update activity for organization: {} organizationName={}",
+            organizationId,
+            existingOrganization.getOrganizationName(),
+            e);
       }
 
       return Optional.of(convertToResponseDTO(existingOrganization));
     } catch (Exception e) {
-      log.error("evt=update_organization_error organizationId={}", organizationId, e);
+      log.error(
+          "evt=update_organization_error organizationId={} requestingUserId={} error={}",
+          organizationId,
+          requestingUserId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to update organization", e);
     }
   }
@@ -233,24 +271,40 @@ public class OrganizationServiceImpl implements OrganizationService {
       }
 
       dynamoDBMapper.delete(organization);
-      log.info("evt=delete_organization_success organizationId={}", organizationId);
+      log.info(
+          "evt=delete_organization_success organizationId={} requestingUserId={}",
+          organizationId,
+          requestingUserId);
 
       // Log organization deletion activity
       try {
+        User user = getUser(requestingUserId);
         activityLogService.logAction(
             ActionType.SYSTEM_ACTION,
-            requestingUserId,
-            "Admin",
-            UserType.COACH,
-            "Deleted organization: " + organization.getOrganizationName());
+            user.getUserId(),
+            user.getName(),
+            UserType.SUPER_ADMIN,
+            "Deleted organization: " + organization.getOrganizationName(),
+            EntityType.SYSTEM,
+            organizationId,
+            organization.getOrganizationName(),
+            "SYSTEM");
       } catch (Exception e) {
         log.warn(
-            "Failed to log organization deletion activity for organization: {}", organizationId, e);
+            "Failed to log organization deletion activity for organization: {} organizationName={}",
+            organizationId,
+            organization.getOrganizationName(),
+            e);
       }
 
       return true;
     } catch (Exception e) {
-      log.error("evt=delete_organization_error organizationId={}", organizationId, e);
+      log.error(
+          "evt=delete_organization_error organizationId={} requestingUserId={} error={}",
+          organizationId,
+          requestingUserId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to delete organization", e);
     }
   }
@@ -265,7 +319,7 @@ public class OrganizationServiceImpl implements OrganizationService {
         requestingUserId);
 
     // Authorization: Only SUPER_ADMIN users can view all organizations
-    requireSuperAdminPermission(requestingUserId);
+    validationUtil.requireSuperAdminPermission(requestingUserId, "SYSTEM");
 
     try {
       DynamoDBScanExpression scanExpression = new DynamoDBScanExpression();
@@ -279,13 +333,18 @@ public class OrganizationServiceImpl implements OrganizationService {
           paginateResults(organizations, page, size);
 
       log.info(
-          "evt=get_all_organizations_success total={} page={} size={}",
+          "evt=get_all_organizations_success total={} page={} size={} requestingUserId={}",
           organizations.size(),
           page,
-          size);
+          size,
+          requestingUserId);
       return paginatedResult;
     } catch (Exception e) {
-      log.error("evt=get_all_organizations_error", e);
+      log.error(
+          "evt=get_all_organizations_error requestingUserId={} error={}",
+          requestingUserId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to retrieve organizations", e);
     }
   }
@@ -300,7 +359,7 @@ public class OrganizationServiceImpl implements OrganizationService {
         size,
         requestingUserId);
 
-    // Authorization: Users can only view their own organizations or SUPER_ADMIN can view any
+    // Authorization: Only the owner or SUPER_ADMIN can view organizations by owner
     if (!ownerId.equals(requestingUserId) && !isSuperAdminUser(requestingUserId)) {
       log.warn(
           "evt=get_organizations_by_owner_unauthorized ownerId={} requestingUserId={}",
@@ -311,15 +370,15 @@ public class OrganizationServiceImpl implements OrganizationService {
     }
 
     try {
-      Map<String, AttributeValue> expressionAttributeValues = new HashMap<>();
-      expressionAttributeValues.put(":ownerId", new AttributeValue().withS(ownerId));
+      Map<String, AttributeValue> eav = new HashMap<>();
+      eav.put(":ownerId", new AttributeValue().withS(ownerId));
 
       DynamoDBQueryExpression<Organization> queryExpression =
           new DynamoDBQueryExpression<Organization>()
               .withIndexName("ownerId-index")
               .withConsistentRead(false)
               .withKeyConditionExpression("ownerId = :ownerId")
-              .withExpressionAttributeValues(expressionAttributeValues);
+              .withExpressionAttributeValues(eav);
 
       List<Organization> organizations = dynamoDBMapper.query(Organization.class, queryExpression);
 
@@ -328,14 +387,21 @@ public class OrganizationServiceImpl implements OrganizationService {
           paginateResults(organizations, page, size);
 
       log.info(
-          "evt=get_organizations_by_owner_success ownerId={} total={} page={} size={}",
+          "evt=get_organizations_by_owner_success ownerId={} total={} page={} size={}"
+              + " requestingUserId={}",
           ownerId,
           organizations.size(),
           page,
-          size);
+          size,
+          requestingUserId);
       return paginatedResult;
     } catch (Exception e) {
-      log.error("evt=get_organizations_by_owner_error ownerId={}", ownerId, e);
+      log.error(
+          "evt=get_organizations_by_owner_error ownerId={} requestingUserId={} error={}",
+          ownerId,
+          requestingUserId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to retrieve organizations by owner", e);
     }
   }
@@ -346,7 +412,11 @@ public class OrganizationServiceImpl implements OrganizationService {
       Organization organization = dynamoDBMapper.load(Organization.class, organizationId);
       return organization != null;
     } catch (Exception e) {
-      log.error("evt=organization_exists_error organizationId={}", organizationId, e);
+      log.error(
+          "evt=organization_exists_error organizationId={} error={}",
+          organizationId,
+          e.getMessage(),
+          e);
       return false;
     }
   }
@@ -366,7 +436,7 @@ public class OrganizationServiceImpl implements OrganizationService {
         requestingUserId);
 
     // Authorization: Only SUPER_ADMIN can add coaches to organizations
-    requireSuperAdminPermission(requestingUserId);
+    validationUtil.requireSuperAdminPermission(requestingUserId, "SYSTEM");
 
     // Validate organization exists
     if (!organizationExists(organizationId)) {
@@ -385,38 +455,52 @@ public class OrganizationServiceImpl implements OrganizationService {
 
     try {
       // Create coach user with organization context
-      UserInfo coachUser = authService.addStudent(coachRequest, requestingUserId);
-
-      // Update the user's organizationId (this would need to be implemented in UserService)
-      // For now, we'll assume the user is created with the correct organization context
+      coachRequest.setOrganizationId(organizationId);
+      UserInfo coachInfo = authService.addStudent(coachRequest, requestingUserId);
 
       log.info(
-          "evt=add_coach_to_organization_success organizationId={} coachUserId={}",
-          organizationId,
-          coachUser.getUserId());
-
-      // Log the activity
-      try {
-        activityLogService.logAction(
-            ActionType.CREATE_STUDENT,
-            requestingUserId,
-            "Super Admin",
-            UserType.SUPER_ADMIN,
-            "Added coach to organization: " + coachRequest.getName());
-      } catch (Exception e) {
-        log.warn("Failed to log coach addition activity for organization: {}", organizationId, e);
-      }
-
-      return coachUser;
-    } catch (Exception e) {
-      log.error(
-          "evt=add_coach_to_organization_error organizationId={} coachEmail={}",
+          "evt=add_coach_to_organization_success organizationId={} coachEmail={}"
+              + " requestingUserId={}",
           organizationId,
           coachRequest.getEmail(),
+          requestingUserId);
+
+      // Log coach addition activity
+      try {
+        User admin = getUser(requestingUserId);
+        activityLogService.logAction(
+            ActionType.SYSTEM_ACTION,
+            admin.getUserId(),
+            admin.getName(),
+            UserType.SUPER_ADMIN,
+            "Added coach to organization: " + coachRequest.getEmail(),
+            EntityType.USER,
+            coachInfo.getUserId(),
+            coachInfo.getName(),
+            "SYSTEM");
+      } catch (Exception e) {
+        log.warn(
+            "Failed to log coach addition activity for organization: {} coachEmail={}",
+            organizationId,
+            coachRequest.getEmail(),
+            e);
+      }
+
+      return coachInfo;
+    } catch (Exception e) {
+      log.error(
+          "evt=add_coach_to_organization_error organizationId={} coachEmail={} requestingUserId={}"
+              + " error={}",
+          organizationId,
+          coachRequest.getEmail(),
+          requestingUserId,
+          e.getMessage(),
           e);
       throw UserException.databaseError("Failed to add coach to organization", e);
     }
   }
+
+  // Helper methods
 
   private void validateOrganizationRequest(OrganizationRequestDTO request) {
     if (request.getOrganizationName() == null || request.getOrganizationName().trim().isEmpty()) {
@@ -462,68 +546,58 @@ public class OrganizationServiceImpl implements OrganizationService {
   private PageResponseDTO<OrganizationResponseDTO> paginateResults(
       List<Organization> organizations, int page, int size) {
     int totalElements = organizations.size();
-    int totalPages = (int) Math.ceil((double) totalElements / size);
-
     int startIndex = page * size;
     int endIndex = Math.min(startIndex + size, totalElements);
 
-    List<OrganizationResponseDTO> pageContent = new ArrayList<>();
-    if (startIndex < totalElements) {
-      pageContent =
-          organizations.subList(startIndex, endIndex).stream()
-              .map(this::convertToResponseDTO)
-              .collect(Collectors.toList());
-    }
+    List<Organization> paginatedOrganizations =
+        startIndex < totalElements
+            ? organizations.subList(startIndex, endIndex)
+            : new ArrayList<>();
 
-    PageResponseDTO.PageInfoDTO pageInfo =
-        new PageResponseDTO.PageInfoDTO(page, size, totalPages, totalElements);
-    return new PageResponseDTO<>(pageContent, pageInfo);
-  }
+    List<OrganizationResponseDTO> organizationDTOs =
+        paginatedOrganizations.stream()
+            .map(this::convertToResponseDTO)
+            .collect(Collectors.toList());
 
-  private void requireSuperAdminPermission(String userId) {
-    User user = getUser(userId);
-    if (user == null || !UserType.SUPER_ADMIN.name().equals(user.getUserType())) {
-      log.warn("evt=require_super_admin_permission_denied userId={}", userId);
-      throw new AuthException("FORBIDDEN", "Super Admin permission required", 403);
-    }
-  }
+    PageResponseDTO.PageInfoDTO pageInfo = new PageResponseDTO.PageInfoDTO();
+    pageInfo.setCurrentPage(page);
+    pageInfo.setPageSize(size);
+    pageInfo.setTotalElements((long) totalElements);
+    pageInfo.setTotalPages((int) Math.ceil((double) totalElements / size));
 
-  private void requireAdminPermission(String userId) {
-    User user = getUser(userId);
-    if (user == null || !Boolean.TRUE.equals(user.getIsAdmin())) {
-      log.warn("evt=require_admin_permission_denied userId={}", userId);
-      throw new AuthException("FORBIDDEN", "Admin permission required", 403);
-    }
-  }
+    PageResponseDTO<OrganizationResponseDTO> response = new PageResponseDTO<>();
+    response.setContent(organizationDTOs);
+    response.setPageInfo(pageInfo);
 
-  private boolean isSuperAdminUser(String userId) {
-    try {
-      User user = getUser(userId);
-      return user != null && UserType.SUPER_ADMIN.name().equals(user.getUserType());
-    } catch (Exception e) {
-      return false;
-    }
-  }
-
-  private boolean isAdminUser(String userId) {
-    try {
-      User user = getUser(userId);
-      return user != null && Boolean.TRUE.equals(user.getIsAdmin());
-    } catch (Exception e) {
-      return false;
-    }
+    return response;
   }
 
   private boolean isOrganizationOwner(Organization organization, String userId) {
     return organization.getOwnerId().equals(userId);
   }
 
+  private boolean isSuperAdminUser(String userId) {
+    try {
+      User user = getUser(userId);
+      return UserType.SUPER_ADMIN.name().equals(user.getUserType());
+    } catch (Exception e) {
+      log.error("evt=is_super_admin_user_error userId={} error={}", userId, e.getMessage(), e);
+      return false;
+    }
+  }
+
   private User getUser(String userId) {
     try {
-      return userService.getUserById(userId).orElse(null);
+      User user = userService.getUserById(userId).orElse(null);
+      if (user == null) {
+        throw UserException.userNotFound("User not found: " + userId);
+      }
+      return user;
+    } catch (UserException e) {
+      throw e;
     } catch (Exception e) {
-      log.error("evt=get_user_error userId={}", userId, e);
-      return null;
+      log.error("evt=get_user_error userId={} error={}", userId, e.getMessage(), e);
+      throw UserException.databaseError("Failed to retrieve user", e);
     }
   }
 }

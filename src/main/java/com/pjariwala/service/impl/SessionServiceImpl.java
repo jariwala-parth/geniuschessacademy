@@ -20,6 +20,7 @@ import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.EnrollmentService;
 import com.pjariwala.service.SessionService;
 import com.pjariwala.service.UserService;
+import com.pjariwala.util.ValidationUtil;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.TextStyle;
@@ -43,15 +44,23 @@ public class SessionServiceImpl implements SessionService {
 
   @Autowired private EnrollmentService enrollmentService;
 
+  @Autowired private ValidationUtil validationUtil;
+
   @Override
-  public SessionDTO createSession(SessionCreateRequest request, String requestingUserId) {
+  public SessionDTO createSession(
+      SessionCreateRequest request, String requestingUserId, String organizationId) {
     log.info(
-        "evt=create_session_start batchId={} requestingUserId={}",
+        "evt=create_session_start batchId={} requestingUserId={} organizationId={}",
         request.getBatchId(),
-        requestingUserId);
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
 
     // Validate batch exists
-    Batch batch = getBatch(request.getBatchId());
+    Batch batch = getBatch(request.getBatchId(), organizationId);
     if (batch == null) {
       throw UserException.validationError("Batch not found: " + request.getBatchId());
     }
@@ -63,6 +72,7 @@ public class SessionServiceImpl implements SessionService {
     Session session =
         Session.builder()
             .sessionId("SESSION_" + UUID.randomUUID().toString().replace("-", ""))
+            .organizationId(organizationId)
             .batchId(request.getBatchId())
             .sessionDate(request.getSessionDate())
             .startTime(request.getStartTime())
@@ -86,6 +96,7 @@ public class SessionServiceImpl implements SessionService {
           String.format("Created session for batch: %s", batch.getBatchName()),
           EntityType.SESSION,
           session.getSessionId(),
+          organizationId,
           String.format("Session on %s", session.getSessionDate()));
     } catch (Exception e) {
       log.warn(
@@ -97,15 +108,25 @@ public class SessionServiceImpl implements SessionService {
   }
 
   @Override
-  public SessionDTO getSessionById(String sessionId, String requestingUserId) {
-    log.info("evt=get_session_by_id sessionId={} requestingUserId={}", sessionId, requestingUserId);
+  public SessionDTO getSessionById(
+      String sessionId, String requestingUserId, String organizationId) {
+    log.info(
+        "evt=get_session_by_id sessionId={} requestingUserId={} organizationId={}",
+        sessionId,
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
     // Find session by scanning (since sessionId is the range key)
     DynamoDBScanExpression scanExpression =
         new DynamoDBScanExpression()
-            .withFilterExpression("sessionId = :sessionId")
+            .withFilterExpression("sessionId = :sessionId AND organizationId = :organizationId")
             .withExpressionAttributeValues(
-                java.util.Map.of(":sessionId", new AttributeValue(sessionId)));
+                java.util.Map.of(
+                    ":sessionId", new AttributeValue(sessionId),
+                    ":organizationId", new AttributeValue(organizationId)));
 
     List<Session> sessions = dynamoDBMapper.scan(Session.class, scanExpression);
     if (sessions.isEmpty()) {
@@ -115,7 +136,7 @@ public class SessionServiceImpl implements SessionService {
     Session session = sessions.get(0);
 
     // Validate permissions
-    Batch batch = getBatch(session.getBatchId());
+    Batch batch = getBatch(session.getBatchId(), organizationId);
     if (batch != null) {
       validateCoachPermissions(batch.getCoachId(), requestingUserId);
     }
@@ -125,23 +146,28 @@ public class SessionServiceImpl implements SessionService {
 
   @Override
   public PageResponseDTO<SessionDTO> getSessionsByBatch(
-      String batchId, int page, int size, String requestingUserId) {
+      String batchId, int page, int size, String requestingUserId, String organizationId) {
     log.info(
-        "evt=get_sessions_by_batch batchId={} page={} size={} requestingUserId={}",
+        "evt=get_sessions_by_batch batchId={} page={} size={} requestingUserId={}"
+            + " organizationId={}",
         batchId,
         page,
         size,
-        requestingUserId);
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
     // Validate batch exists
-    Batch batch = getBatch(batchId);
+    Batch batch = getBatch(batchId, organizationId);
     if (batch == null) {
       throw UserException.validationError("Batch not found: " + batchId);
     }
 
     // Check permissions: coaches can see their own batches, students can see enrolled batches
     User requestingUser = getUser(requestingUserId);
-    if ("COACH".equals(requestingUser.getUserType())) {
+    if (UserType.COACH.name().equals(requestingUser.getUserType())) {
       // Coach can only see their own batches
       if (!batch.getCoachId().equals(requestingUserId)) {
         throw UserException.validationError(
@@ -149,7 +175,8 @@ public class SessionServiceImpl implements SessionService {
       }
     } else {
       // Student can only see sessions for batches they're enrolled in
-      boolean isEnrolled = enrollmentService.isStudentEnrolled(batchId, requestingUserId);
+      boolean isEnrolled =
+          enrollmentService.isStudentEnrolled(batchId, requestingUserId, organizationId);
       if (!isEnrolled) {
         throw UserException.validationError(
             "Access denied: You can only view sessions for batches you're enrolled in");
@@ -158,6 +185,7 @@ public class SessionServiceImpl implements SessionService {
 
     // Query sessions for this batch
     Session sessionKey = new Session();
+    sessionKey.setOrganizationId(organizationId);
     sessionKey.setBatchId(batchId);
 
     DynamoDBQueryExpression<Session> queryExpression =
@@ -183,18 +211,31 @@ public class SessionServiceImpl implements SessionService {
 
   @Override
   public PageResponseDTO<SessionDTO> getSessionsByDateRange(
-      LocalDate startDate, LocalDate endDate, int page, int size, String requestingUserId) {
+      LocalDate startDate,
+      LocalDate endDate,
+      int page,
+      int size,
+      String requestingUserId,
+      String organizationId) {
     log.info(
         "evt=get_sessions_by_date_range startDate={} endDate={} page={} size={}"
-            + " requestingUserId={}",
+            + " requestingUserId={} organizationId={}",
         startDate,
         endDate,
         page,
         size,
-        requestingUserId);
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
     // Get all sessions and filter by date range
-    DynamoDBScanExpression scanExpression = new DynamoDBScanExpression();
+    DynamoDBScanExpression scanExpression =
+        new DynamoDBScanExpression()
+            .withFilterExpression("organizationId = :organizationId")
+            .withExpressionAttributeValues(
+                java.util.Map.of(":organizationId", new AttributeValue(organizationId)));
     List<Session> allSessions = dynamoDBMapper.scan(Session.class, scanExpression);
 
     // Get user type for permission checking
@@ -211,16 +252,16 @@ public class SessionServiceImpl implements SessionService {
                   }
 
                   // Check permissions based on user type
-                  Batch batch = getBatch(session.getBatchId());
+                  Batch batch = getBatch(session.getBatchId(), organizationId);
                   if (batch == null) return false;
 
-                  if ("COACH".equals(requestingUser.getUserType())) {
+                  if (UserType.COACH.name().equals(requestingUser.getUserType())) {
                     // Coach can only see their own batches
                     return batch.getCoachId().equals(requestingUserId);
                   } else {
                     // Student can see sessions for batches they're enrolled in
                     return enrollmentService.isStudentEnrolled(
-                        batch.getBatchId(), requestingUserId);
+                        batch.getBatchId(), requestingUserId, organizationId);
                   }
                 })
             .sorted(
@@ -245,15 +286,28 @@ public class SessionServiceImpl implements SessionService {
 
   @Override
   public SessionDTO updateSession(
-      String sessionId, SessionUpdateRequest request, String requestingUserId) {
-    log.info("evt=update_session sessionId={} requestingUserId={}", sessionId, requestingUserId);
+      String sessionId,
+      SessionUpdateRequest request,
+      String requestingUserId,
+      String organizationId) {
+    log.info(
+        "evt=update_session sessionId={} requestingUserId={} organizationId={}",
+        sessionId,
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
 
     // Get existing session
     DynamoDBScanExpression scanExpression =
         new DynamoDBScanExpression()
-            .withFilterExpression("sessionId = :sessionId")
+            .withFilterExpression("sessionId = :sessionId AND organizationId = :organizationId")
             .withExpressionAttributeValues(
-                java.util.Map.of(":sessionId", new AttributeValue(sessionId)));
+                java.util.Map.of(
+                    ":sessionId", new AttributeValue(sessionId),
+                    ":organizationId", new AttributeValue(organizationId)));
 
     List<Session> sessions = dynamoDBMapper.scan(Session.class, scanExpression);
     if (sessions.isEmpty()) {
@@ -263,7 +317,7 @@ public class SessionServiceImpl implements SessionService {
     Session session = sessions.get(0);
 
     // Validate permissions
-    Batch batch = getBatch(session.getBatchId());
+    Batch batch = getBatch(session.getBatchId(), organizationId);
     if (batch == null) {
       throw UserException.validationError("Batch not found: " + session.getBatchId());
     }
@@ -293,6 +347,7 @@ public class SessionServiceImpl implements SessionService {
           String.format("Updated session: %s", sessionId),
           EntityType.SESSION,
           sessionId,
+          organizationId,
           String.format("Session on %s", session.getSessionDate()));
     } catch (Exception e) {
       log.warn("Failed to log session update activity for session: {}", sessionId, e);
@@ -302,15 +357,25 @@ public class SessionServiceImpl implements SessionService {
   }
 
   @Override
-  public void deleteSession(String sessionId, String requestingUserId) {
-    log.info("evt=delete_session sessionId={} requestingUserId={}", sessionId, requestingUserId);
+  public void deleteSession(String sessionId, String requestingUserId, String organizationId) {
+    log.info(
+        "evt=delete_session sessionId={} requestingUserId={} organizationId={}",
+        sessionId,
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
 
     // Get existing session
     DynamoDBScanExpression scanExpression =
         new DynamoDBScanExpression()
-            .withFilterExpression("sessionId = :sessionId")
+            .withFilterExpression("sessionId = :sessionId AND organizationId = :organizationId")
             .withExpressionAttributeValues(
-                java.util.Map.of(":sessionId", new AttributeValue(sessionId)));
+                java.util.Map.of(
+                    ":sessionId", new AttributeValue(sessionId),
+                    ":organizationId", new AttributeValue(organizationId)));
 
     List<Session> sessions = dynamoDBMapper.scan(Session.class, scanExpression);
     if (sessions.isEmpty()) {
@@ -320,7 +385,7 @@ public class SessionServiceImpl implements SessionService {
     Session session = sessions.get(0);
 
     // Validate permissions
-    Batch batch = getBatch(session.getBatchId());
+    Batch batch = getBatch(session.getBatchId(), organizationId);
     if (batch == null) {
       throw UserException.validationError("Batch not found: " + session.getBatchId());
     }
@@ -339,6 +404,7 @@ public class SessionServiceImpl implements SessionService {
           String.format("Deleted session: %s", sessionId),
           EntityType.SESSION,
           sessionId,
+          organizationId,
           String.format("Session on %s", session.getSessionDate()));
     } catch (Exception e) {
       log.warn("Failed to log session deletion activity for session: {}", sessionId, e);
@@ -347,16 +413,26 @@ public class SessionServiceImpl implements SessionService {
 
   @Override
   public List<SessionDTO> generateSessionsForBatch(
-      String batchId, LocalDate startDate, LocalDate endDate, String requestingUserId) {
+      String batchId,
+      LocalDate startDate,
+      LocalDate endDate,
+      String requestingUserId,
+      String organizationId) {
     log.info(
-        "evt=generate_sessions_for_batch batchId={} startDate={} endDate={} requestingUserId={}",
+        "evt=generate_sessions_for_batch batchId={} startDate={} endDate={} requestingUserId={}"
+            + " organizationId={}",
         batchId,
         startDate,
         endDate,
-        requestingUserId);
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
 
     // Validate batch exists and permissions
-    Batch batch = getBatch(batchId);
+    Batch batch = getBatch(batchId, organizationId);
     if (batch == null) {
       throw UserException.validationError("Batch not found: " + batchId);
     }
@@ -375,6 +451,7 @@ public class SessionServiceImpl implements SessionService {
         Session session =
             Session.builder()
                 .sessionId("SESSION_" + UUID.randomUUID().toString().replace("-", ""))
+                .organizationId(organizationId)
                 .batchId(batchId)
                 .sessionDate(currentDate)
                 .startTime(batch.getBatchTiming().getStartTime())
@@ -404,6 +481,7 @@ public class SessionServiceImpl implements SessionService {
               generatedSessions.size(), batch.getBatchName()),
           EntityType.SESSION,
           null,
+          organizationId,
           null);
     } catch (Exception e) {
       log.warn("Failed to log session generation activity for batch: {}", batchId, e);
@@ -412,46 +490,9 @@ public class SessionServiceImpl implements SessionService {
     return generatedSessions;
   }
 
-  @Override
-  public List<SessionDTO> getTodaysSessions(String requestingUserId) {
-    log.info("evt=get_todays_sessions requestingUserId={}", requestingUserId);
-
-    LocalDate today = LocalDate.now();
-
-    // Get all sessions for today
-    DynamoDBScanExpression scanExpression =
-        new DynamoDBScanExpression()
-            .withFilterExpression("sessionDate = :today")
-            .withExpressionAttributeValues(
-                java.util.Map.of(":today", new AttributeValue(today.toString())));
-
-    List<Session> todaysSessions = dynamoDBMapper.scan(Session.class, scanExpression);
-
-    // Get user type for permission checking
-    User requestingUser = getUser(requestingUserId);
-
-    // Filter by permissions based on user type
-    return todaysSessions.stream()
-        .filter(
-            session -> {
-              Batch batch = getBatch(session.getBatchId());
-              if (batch == null) return false;
-
-              if ("COACH".equals(requestingUser.getUserType())) {
-                // Coach can only see their own batches
-                return batch.getCoachId().equals(requestingUserId);
-              } else {
-                // Student can see sessions for batches they're enrolled in
-                return enrollmentService.isStudentEnrolled(batch.getBatchId(), requestingUserId);
-              }
-            })
-        .map(this::convertToDTO)
-        .toList();
-  }
-
   private SessionDTO convertToDTO(Session session) {
     // Get batch to include batch name
-    Batch batch = getBatch(session.getBatchId());
+    Batch batch = getBatch(session.getBatchId(), session.getOrganizationId());
     String batchName = batch != null ? batch.getBatchName() : "Unknown Batch";
 
     return new SessionDTO(
@@ -468,16 +509,16 @@ public class SessionServiceImpl implements SessionService {
         session.getUpdatedAt());
   }
 
-  private Batch getBatch(String batchId) {
-    return dynamoDBMapper.load(Batch.class, batchId);
+  private Batch getBatch(String batchId, String organizationId) {
+    return dynamoDBMapper.load(Batch.class, organizationId, batchId);
   }
 
   private com.pjariwala.model.User getUser(String userId) {
     try {
       // Try both COACH and STUDENT types since we don't know which type the user is
-      User user = userService.getUserById(userId, "COACH");
+      User user = userService.getUserById(userId, UserType.COACH.name());
       if (user == null) {
-        user = userService.getUserById(userId, "STUDENT");
+        user = userService.getUserById(userId, UserType.STUDENT.name());
       }
       if (user == null) {
         log.error("evt=get_user_error userId={} msg=user_not_found", userId);

@@ -57,26 +57,15 @@ public class AuthController {
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<UserInfo> addStudent(
       @Parameter(hidden = true) @RequestAttribute("userId") String coachId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType,
       @RequestBody SignupRequest signupRequest) {
 
-    log.info(
-        "Received add-student request from coach: {} for email: {}",
-        coachId,
-        signupRequest.getEmail());
-
-    // Validate that the requesting user is a coach
-    if (!"COACH".equals(userType)) {
-      log.error("Non-coach user {} attempted to add student", coachId);
-      return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
-    }
+    log.info("evt=add_student_request coachId={} email={}", coachId, signupRequest.getEmail());
 
     // Force the user type to be STUDENT regardless of what's in the request
     signupRequest.setUserType("STUDENT");
 
     UserInfo studentInfo = authService.addStudent(signupRequest, coachId);
-    log.info(
-        "Student added successfully by coach: {} for email: {}", coachId, signupRequest.getEmail());
+    log.info("evt=add_student_success coachId={} email={}", coachId, signupRequest.getEmail());
     return ResponseEntity.status(HttpStatus.CREATED).body(studentInfo);
   }
 
@@ -86,19 +75,19 @@ public class AuthController {
       description = "Authenticate user and get JWT token. No authentication required.")
   public ResponseEntity<AuthResponse> login(@RequestBody AuthRequest authRequest) {
     log.info(
-        "Received login request for user: {} with userType: {}",
+        "evt=login_request login={} userType={}",
         authRequest.getLogin(),
         authRequest.getUserType());
     AuthResponse response = authService.login(authRequest);
-    log.info("Login completed successfully for user: {}", authRequest.getLogin());
+    log.info("evt=login_success login={}", authRequest.getLogin());
     return ResponseEntity.ok(response);
   }
 
   @PostMapping("/refresh")
   public ResponseEntity<AuthResponse> refreshToken(@RequestParam String refreshToken) {
-    log.info("Received token refresh request");
+    log.info("evt=refresh_token_request");
     AuthResponse response = authService.refreshToken(refreshToken);
-    log.info("Token refresh completed successfully");
+    log.info("evt=refresh_token_success");
     return ResponseEntity.ok(response);
   }
 

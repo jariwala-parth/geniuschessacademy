@@ -2,6 +2,7 @@ package com.pjariwala.service;
 
 import com.pjariwala.dto.PageResponseDTO;
 import com.pjariwala.dto.UserInfo;
+import com.pjariwala.dto.UserOrganizationsResponse;
 import com.pjariwala.model.User;
 import java.util.List;
 import java.util.Optional;
@@ -27,7 +28,7 @@ public interface UserService {
   /** Get user by Cognito sub */
   Optional<User> getUserByCognitoSub(String cognitoSub);
 
-  List<User> getUsersByType(String userType);
+  List<User> getUsersByType(String userType, String organizationId);
 
   /**
    * Get users by type with search and pagination support
@@ -36,10 +37,17 @@ public interface UserService {
    * @param searchTerm Optional search term to filter by name, email, or phone
    * @param page Page number (0-based)
    * @param size Page size
+   * @param requestingUserId The ID of the user making the request (for validation)
+   * @param organizationId Organization ID for filtering
    * @return Paginated list of users matching criteria
    */
   PageResponseDTO<UserInfo> getUsersByTypeWithSearch(
-      String userType, String searchTerm, int page, int size);
+      String userType,
+      String searchTerm,
+      int page,
+      int size,
+      String requestingUserId,
+      String organizationId);
 
   User updateUser(User user);
 
@@ -55,4 +63,7 @@ public interface UserService {
 
   /** Generate unique user ID */
   String generateUserId();
+
+  /** Get user's organizations and roles */
+  UserOrganizationsResponse getUserOrganizations(String userId);
 }

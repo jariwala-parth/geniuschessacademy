@@ -13,7 +13,12 @@ public interface ActivityLogService {
 
   /** Log a user action */
   void logAction(
-      ActionType actionType, String userId, String userName, UserType userType, String description);
+      ActionType actionType,
+      String userId,
+      String userName,
+      UserType userType,
+      String description,
+      String organizationId);
 
   /** Log a user action with entity details */
   void logAction(
@@ -24,7 +29,8 @@ public interface ActivityLogService {
       String description,
       EntityType entityType,
       String entityId,
-      String entityName);
+      String entityName,
+      String organizationId);
 
   /** Log a user action with full details */
   void logAction(
@@ -41,35 +47,55 @@ public interface ActivityLogService {
       String errorMessage,
       String ipAddress,
       String userAgent,
-      String sessionId);
+      String sessionId,
+      String organizationId);
 
   /** Get recent activities for a user */
-  List<ActivityLogDTO> getRecentActivitiesByUser(String userId, int limit);
+  List<ActivityLogDTO> getRecentActivitiesByUser(
+      String userId, int limit, String requestingUserId, String organizationId);
 
   /** Get recent activities for all users (admin/coach view) */
-  PageResponseDTO<ActivityLogDTO> getRecentActivities(int page, int size);
+  PageResponseDTO<ActivityLogDTO> getRecentActivities(
+      int page, int size, String requestingUserId, String organizationId);
 
   /** Get activities by action type */
-  List<ActivityLogDTO> getActivitiesByActionType(ActionType actionType, int limit);
+  List<ActivityLogDTO> getActivitiesByActionType(
+      ActionType actionType, int limit, String requestingUserId, String organizationId);
 
   /** Get activities for a specific entity */
-  List<ActivityLogDTO> getActivitiesByEntity(EntityType entityType, String entityId, int limit);
+  List<ActivityLogDTO> getActivitiesByEntity(
+      EntityType entityType,
+      String entityId,
+      int limit,
+      String requestingUserId,
+      String organizationId);
 
   /** Get activities within a date range */
   List<ActivityLogDTO> getActivitiesByDateRange(
-      LocalDateTime startDate, LocalDateTime endDate, int page, int size);
+      LocalDateTime startDate,
+      LocalDateTime endDate,
+      int page,
+      int size,
+      String requestingUserId,
+      String organizationId);
 
   /** Helper method to log successful login */
-  void logLogin(String userId, String userName, UserType userType);
+  void logLogin(String userId, String userName, UserType userType, String organizationId);
 
   /** Helper method to log logout */
-  void logLogout(String userId, String userName, UserType userType);
+  void logLogout(String userId, String userName, UserType userType, String organizationId);
 
   /** Helper method to log student creation */
-  void logStudentCreation(String coachId, String coachName, String studentId, String studentName);
+  void logStudentCreation(
+      String coachId,
+      String coachName,
+      String studentId,
+      String studentName,
+      String organizationId);
 
   /** Helper method to log batch creation */
-  void logBatchCreation(String coachId, String coachName, String batchId, String batchName);
+  void logBatchCreation(
+      String coachId, String coachName, String batchId, String batchName, String organizationId);
 
   /** Helper method to log enrollment */
   void logEnrollment(
@@ -78,7 +104,8 @@ public interface ActivityLogService {
       String studentId,
       String studentName,
       String batchId,
-      String batchName);
+      String batchName,
+      String organizationId);
 
   /** Helper method to log payment */
   void logPayment(
@@ -89,5 +116,6 @@ public interface ActivityLogService {
       String studentName,
       String batchId,
       String batchName,
-      double amount);
+      double amount,
+      String organizationId);
 }

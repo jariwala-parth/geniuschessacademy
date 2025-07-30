@@ -13,13 +13,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/api/v1/users")
+@RequestMapping("/api/v1/organizations/{organizationId}/users")
 @CrossOrigin(origins = "*")
 @Slf4j
 @Tag(name = "User Management", description = "APIs for managing users")
@@ -36,36 +37,32 @@ public class UserController {
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<PageResponseDTO<UserInfo>> getAllStudents(
       @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType,
+      @PathVariable String organizationId,
       @RequestParam(value = "search", required = false) String searchTerm,
       @RequestParam(value = "page", defaultValue = "0") int page,
       @RequestParam(value = "size", defaultValue = "100") int size) {
 
     log.info(
-        "Received get-students request from user: {} search: {} page: {} size: {}",
+        "evt=get_students_request userId={} search={} page={} size={} organizationId={}",
         userId,
         searchTerm,
         page,
-        size);
-
-    // Validate that the requesting user is a coach
-    if (!"COACH".equals(userType)) {
-      log.error("Non-coach user {} attempted to get students", userId);
-      return ResponseEntity.status(403).build();
-    }
+        size,
+        organizationId);
 
     try {
       PageResponseDTO<UserInfo> result =
-          userService.getUsersByTypeWithSearch("STUDENT", searchTerm, page, size);
+          userService.getUsersByTypeWithSearch(
+              "STUDENT", searchTerm, page, size, userId, organizationId);
 
       log.info(
-          "Retrieved {} students successfully (page {}, total: {})",
+          "evt=get_students_success count={} page={} total={}",
           result.getContent().size(),
           page,
           result.getPageInfo().getTotalElements());
       return ResponseEntity.ok(result);
     } catch (Exception e) {
-      log.error("Failed to retrieve students", e);
+      log.error("evt=get_students_error error={}", e.getMessage(), e);
       return ResponseEntity.status(500).build();
     }
   }
@@ -79,36 +76,32 @@ public class UserController {
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<PageResponseDTO<UserInfo>> getAllCoaches(
       @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType,
+      @PathVariable String organizationId,
       @RequestParam(value = "search", required = false) String searchTerm,
       @RequestParam(value = "page", defaultValue = "0") int page,
       @RequestParam(value = "size", defaultValue = "100") int size) {
 
     log.info(
-        "Received get-coaches request from user: {} search: {} page: {} size: {}",
+        "evt=get_coaches_request userId={} search={} page={} size={} organizationId={}",
         userId,
         searchTerm,
         page,
-        size);
-
-    // Validate that the requesting user is a coach
-    if (!"COACH".equals(userType)) {
-      log.error("Non-coach user {} attempted to get coaches", userId);
-      return ResponseEntity.status(403).build();
-    }
+        size,
+        organizationId);
 
     try {
       PageResponseDTO<UserInfo> result =
-          userService.getUsersByTypeWithSearch("COACH", searchTerm, page, size);
+          userService.getUsersByTypeWithSearch(
+              "COACH", searchTerm, page, size, userId, organizationId);
 
       log.info(
-          "Retrieved {} coaches successfully (page {}, total: {})",
+          "evt=get_coaches_success count={} page={} total={}",
           result.getContent().size(),
           page,
           result.getPageInfo().getTotalElements());
       return ResponseEntity.ok(result);
     } catch (Exception e) {
-      log.error("Failed to retrieve coaches", e);
+      log.error("evt=get_coaches_error error={}", e.getMessage(), e);
       return ResponseEntity.status(500).build();
     }
   }
@@ -118,7 +111,6 @@ public class UserController {
     userInfo.setUserId(user.getUserId());
     userInfo.setEmail(user.getEmail());
     userInfo.setName(user.getName());
-    userInfo.setUserType(user.getUserType());
     userInfo.setPhoneNumber(user.getPhoneNumber());
     return userInfo;
   }

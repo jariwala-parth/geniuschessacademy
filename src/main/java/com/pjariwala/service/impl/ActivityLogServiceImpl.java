@@ -14,6 +14,7 @@ import com.pjariwala.enums.EntityType;
 import com.pjariwala.enums.UserType;
 import com.pjariwala.model.ActivityLog;
 import com.pjariwala.service.ActivityLogService;
+import com.pjariwala.util.ValidationUtil;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
@@ -29,6 +30,7 @@ import org.springframework.stereotype.Service;
 public class ActivityLogServiceImpl implements ActivityLogService {
 
   @Autowired private DynamoDBMapper dynamoDBMapper;
+  @Autowired private ValidationUtil validationUtil;
 
   @Override
   public void logAction(
@@ -36,7 +38,8 @@ public class ActivityLogServiceImpl implements ActivityLogService {
       String userId,
       String userName,
       UserType userType,
-      String description) {
+      String description,
+      String organizationId) {
     logAction(
         actionType,
         userId,
@@ -51,7 +54,8 @@ public class ActivityLogServiceImpl implements ActivityLogService {
         null,
         null,
         null,
-        null);
+        null,
+        organizationId);
   }
 
   @Override
@@ -63,7 +67,8 @@ public class ActivityLogServiceImpl implements ActivityLogService {
       String description,
       EntityType entityType,
       String entityId,
-      String entityName) {
+      String entityName,
+      String organizationId) {
     logAction(
         actionType,
         userId,
@@ -78,7 +83,8 @@ public class ActivityLogServiceImpl implements ActivityLogService {
         null,
         null,
         null,
-        null);
+        null,
+        organizationId);
   }
 
   @Override
@@ -96,12 +102,14 @@ public class ActivityLogServiceImpl implements ActivityLogService {
       String errorMessage,
       String ipAddress,
       String userAgent,
-      String sessionId) {
+      String sessionId,
+      String organizationId) {
 
     try {
       ActivityLog activityLog =
           ActivityLog.builder()
               .logId(generateLogId())
+              .organizationId(organizationId)
               .timestamp(LocalDateTime.now())
               .userId(userId)
               .actionType(actionType)
@@ -121,32 +129,46 @@ public class ActivityLogServiceImpl implements ActivityLogService {
 
       dynamoDBMapper.save(activityLog);
       log.info(
-          "evt=activity_logged userId={} actionType={} description={}",
+          "evt=activity_logged userId={} actionType={} description={} organizationId={}",
           userId,
           actionType,
-          description);
+          description,
+          organizationId);
 
     } catch (Exception e) {
       log.error(
-          "evt=activity_log_error userId={} actionType={} error={}",
+          "evt=activity_log_error userId={} actionType={} organizationId={} error={}",
           userId,
           actionType,
+          organizationId,
           e.getMessage(),
           e);
     }
   }
 
   @Override
-  public List<ActivityLogDTO> getRecentActivitiesByUser(String userId, int limit) {
+  public List<ActivityLogDTO> getRecentActivitiesByUser(
+      String userId, int limit, String requestingUserId, String organizationId) {
+    log.info(
+        "evt=get_user_activities_start userId={} requestingUserId={} organizationId={}",
+        userId,
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+
+    // Validate user access - users can only see their own activities, coaches can see any user's
+    // activities
+    validationUtil.validateUserAccess(requestingUserId, userId, organizationId);
     try {
       Map<String, AttributeValue> eav = new HashMap<>();
+      eav.put(":organizationId", new AttributeValue().withS(organizationId));
       eav.put(":userId", new AttributeValue().withS(userId));
 
       DynamoDBQueryExpression<ActivityLog> queryExpression =
           new DynamoDBQueryExpression<ActivityLog>()
-              .withIndexName("UserIdIndex")
-              .withConsistentRead(false)
-              .withKeyConditionExpression("userId = :userId")
+              .withKeyConditionExpression("organizationId = :organizationId AND userId = :userId")
               .withExpressionAttributeValues(eav)
               .withScanIndexForward(false) // Sort descending by timestamp
               .withLimit(limit);
@@ -154,27 +176,56 @@ public class ActivityLogServiceImpl implements ActivityLogService {
       PaginatedQueryList<ActivityLog> results =
           dynamoDBMapper.query(ActivityLog.class, queryExpression);
 
-      return results.stream().map(ActivityLogDTO::fromActivityLog).collect(Collectors.toList());
+      List<ActivityLogDTO> activities =
+          results.stream().map(ActivityLogDTO::fromActivityLog).collect(Collectors.toList());
+      log.info(
+          "evt=get_user_activities_success userId={} count={} organizationId={}",
+          userId,
+          activities.size(),
+          organizationId);
+      return activities;
 
     } catch (Exception e) {
-      log.error("evt=get_user_activities_error userId={} error={}", userId, e.getMessage(), e);
+      log.error(
+          "evt=get_user_activities_error userId={} organizationId={} error={}",
+          userId,
+          organizationId,
+          e.getMessage(),
+          e);
       return List.of();
     }
   }
 
   @Override
-  public PageResponseDTO<ActivityLogDTO> getRecentActivities(int page, int size) {
-    try {
-      DynamoDBScanExpression scanExpression = new DynamoDBScanExpression();
+  public PageResponseDTO<ActivityLogDTO> getRecentActivities(
+      int page, int size, String requestingUserId, String organizationId) {
+    log.info(
+        "evt=get_recent_activities_start requestingUserId={} organizationId={} page={} size={}",
+        requestingUserId,
+        organizationId,
+        page,
+        size);
 
-      PaginatedScanList<ActivityLog> scanResult =
-          dynamoDBMapper.scan(ActivityLog.class, scanExpression);
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+
+    // Only coaches can view all activities
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    try {
+      Map<String, AttributeValue> eav = new HashMap<>();
+      eav.put(":organizationId", new AttributeValue().withS(organizationId));
+
+      DynamoDBQueryExpression<ActivityLog> queryExpression =
+          new DynamoDBQueryExpression<ActivityLog>()
+              .withKeyConditionExpression("organizationId = :organizationId")
+              .withExpressionAttributeValues(eav)
+              .withScanIndexForward(false); // Sort descending by timestamp
+
+      PaginatedQueryList<ActivityLog> results =
+          dynamoDBMapper.query(ActivityLog.class, queryExpression);
 
       // Convert to list and sort by timestamp (descending)
-      List<ActivityLog> allLogs =
-          scanResult.stream()
-              .sorted((a, b) -> b.getTimestamp().compareTo(a.getTimestamp()))
-              .collect(Collectors.toList());
+      List<ActivityLog> allLogs = results.stream().collect(Collectors.toList());
 
       // Manual pagination
       int totalElements = allLogs.size();
@@ -194,11 +245,20 @@ public class ActivityLogServiceImpl implements ActivityLogService {
       pageInfo.setTotalPages(totalPages);
       pageInfo.setTotalElements((long) totalElements);
 
+      log.info(
+          "evt=get_recent_activities_success requestingUserId={} organizationId={}"
+              + " totalElements={}",
+          requestingUserId,
+          organizationId,
+          totalElements);
       return new PageResponseDTO<>(content, pageInfo);
 
     } catch (Exception e) {
       log.error(
-          "evt=get_recent_activities_error page={} size={} error={}",
+          "evt=get_recent_activities_error requestingUserId={} organizationId={} page={} size={}"
+              + " error={}",
+          requestingUserId,
+          organizationId,
           page,
           size,
           e.getMessage(),
@@ -208,59 +268,124 @@ public class ActivityLogServiceImpl implements ActivityLogService {
   }
 
   @Override
-  public List<ActivityLogDTO> getActivitiesByActionType(ActionType actionType, int limit) {
+  public List<ActivityLogDTO> getActivitiesByActionType(
+      ActionType actionType, int limit, String requestingUserId, String organizationId) {
+    log.info(
+        "evt=get_activities_by_type_start actionType={} requestingUserId={} organizationId={}",
+        actionType,
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+
+    // Only coaches can view activities by action type
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+
     try {
       Map<String, AttributeValue> eav = new HashMap<>();
+      eav.put(":organizationId", new AttributeValue().withS(organizationId));
       eav.put(":actionType", new AttributeValue().withS(actionType.name()));
-
-      DynamoDBQueryExpression<ActivityLog> queryExpression =
-          new DynamoDBQueryExpression<ActivityLog>()
-              .withIndexName("ActionTypeIndex")
-              .withConsistentRead(false)
-              .withKeyConditionExpression("actionType = :actionType")
-              .withExpressionAttributeValues(eav)
-              .withScanIndexForward(false)
-              .withLimit(limit);
-
-      PaginatedQueryList<ActivityLog> results =
-          dynamoDBMapper.query(ActivityLog.class, queryExpression);
-
-      return results.stream().map(ActivityLogDTO::fromActivityLog).collect(Collectors.toList());
-
-    } catch (Exception e) {
-      log.error(
-          "evt=get_activities_by_type_error actionType={} error={}", actionType, e.getMessage(), e);
-      return List.of();
-    }
-  }
-
-  @Override
-  public List<ActivityLogDTO> getActivitiesByEntity(
-      EntityType entityType, String entityId, int limit) {
-    try {
-      Map<String, AttributeValue> eav = new HashMap<>();
-      eav.put(":entityType", new AttributeValue().withS(entityType.name()));
-      eav.put(":entityId", new AttributeValue().withS(entityId));
 
       DynamoDBScanExpression scanExpression =
           new DynamoDBScanExpression()
-              .withFilterExpression("entityType = :entityType AND entityId = :entityId")
+              .withFilterExpression("organizationId = :organizationId AND actionType = :actionType")
               .withExpressionAttributeValues(eav)
               .withLimit(limit);
 
       PaginatedScanList<ActivityLog> results =
           dynamoDBMapper.scan(ActivityLog.class, scanExpression);
 
-      return results.stream()
-          .sorted((a, b) -> b.getTimestamp().compareTo(a.getTimestamp()))
-          .map(ActivityLogDTO::fromActivityLog)
-          .collect(Collectors.toList());
+      List<ActivityLogDTO> activities =
+          results.stream()
+              .sorted((a, b) -> b.getTimestamp().compareTo(a.getTimestamp()))
+              .map(ActivityLogDTO::fromActivityLog)
+              .collect(Collectors.toList());
+
+      log.info(
+          "evt=get_activities_by_type_success actionType={} requestingUserId={} organizationId={}"
+              + " count={}",
+          actionType,
+          requestingUserId,
+          organizationId,
+          activities.size());
+      return activities;
 
     } catch (Exception e) {
       log.error(
-          "evt=get_activities_by_entity_error entityType={} entityId={} error={}",
+          "evt=get_activities_by_type_error actionType={} requestingUserId={} organizationId={}"
+              + " error={}",
+          actionType,
+          requestingUserId,
+          organizationId,
+          e.getMessage(),
+          e);
+      return List.of();
+    }
+  }
+
+  @Override
+  public List<ActivityLogDTO> getActivitiesByEntity(
+      EntityType entityType,
+      String entityId,
+      int limit,
+      String requestingUserId,
+      String organizationId) {
+    log.info(
+        "evt=get_activities_by_entity_start entityType={} entityId={} requestingUserId={}"
+            + " organizationId={}",
+        entityType,
+        entityId,
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+
+    // Only coaches can view activities by entity
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+
+    try {
+      Map<String, AttributeValue> eav = new HashMap<>();
+      eav.put(":organizationId", new AttributeValue().withS(organizationId));
+      eav.put(":entityType", new AttributeValue().withS(entityType.name()));
+      eav.put(":entityId", new AttributeValue().withS(entityId));
+
+      DynamoDBScanExpression scanExpression =
+          new DynamoDBScanExpression()
+              .withFilterExpression(
+                  "organizationId = :organizationId AND entityType = :entityType AND entityId ="
+                      + " :entityId")
+              .withExpressionAttributeValues(eav)
+              .withLimit(limit);
+
+      PaginatedScanList<ActivityLog> results =
+          dynamoDBMapper.scan(ActivityLog.class, scanExpression);
+
+      List<ActivityLogDTO> activities =
+          results.stream()
+              .sorted((a, b) -> b.getTimestamp().compareTo(a.getTimestamp()))
+              .map(ActivityLogDTO::fromActivityLog)
+              .collect(Collectors.toList());
+
+      log.info(
+          "evt=get_activities_by_entity_success entityType={} entityId={} requestingUserId={}"
+              + " organizationId={} count={}",
           entityType,
           entityId,
+          requestingUserId,
+          organizationId,
+          activities.size());
+      return activities;
+
+    } catch (Exception e) {
+      log.error(
+          "evt=get_activities_by_entity_error entityType={} entityId={} requestingUserId={}"
+              + " organizationId={} error={}",
+          entityType,
+          entityId,
+          requestingUserId,
+          organizationId,
           e.getMessage(),
           e);
       return List.of();
@@ -269,10 +394,29 @@ public class ActivityLogServiceImpl implements ActivityLogService {
 
   @Override
   public List<ActivityLogDTO> getActivitiesByDateRange(
-      LocalDateTime startDate, LocalDateTime endDate, int page, int size) {
+      LocalDateTime startDate,
+      LocalDateTime endDate,
+      int page,
+      int size,
+      String requestingUserId,
+      String organizationId) {
+    log.info(
+        "evt=get_activities_by_date_range_start requestingUserId={} organizationId={} startDate={}"
+            + " endDate={}",
+        requestingUserId,
+        organizationId,
+        startDate,
+        endDate);
+
+    // Validate organization access
+    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+
+    // Only coaches can view activities by date range
+    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+
     // This would require additional GSI or complex filtering
     // For now, return recent activities within the date range using scan
-    return getRecentActivities(page, size).getContent().stream()
+    return getRecentActivities(page, size, requestingUserId, organizationId).getContent().stream()
         .filter(
             log -> log.getTimestamp().isAfter(startDate) && log.getTimestamp().isBefore(endDate))
         .collect(Collectors.toList());
@@ -281,20 +425,34 @@ public class ActivityLogServiceImpl implements ActivityLogService {
   // Helper methods for common actions
 
   @Override
-  public void logLogin(String userId, String userName, UserType userType) {
+  public void logLogin(String userId, String userName, UserType userType, String organizationId) {
     logAction(
-        ActionType.LOGIN, userId, userName, userType, String.format("%s logged in", userName));
+        ActionType.LOGIN,
+        userId,
+        userName,
+        userType,
+        String.format("%s logged in", userName),
+        organizationId);
   }
 
   @Override
-  public void logLogout(String userId, String userName, UserType userType) {
+  public void logLogout(String userId, String userName, UserType userType, String organizationId) {
     logAction(
-        ActionType.LOGOUT, userId, userName, userType, String.format("%s logged out", userName));
+        ActionType.LOGOUT,
+        userId,
+        userName,
+        userType,
+        String.format("%s logged out", userName),
+        organizationId);
   }
 
   @Override
   public void logStudentCreation(
-      String coachId, String coachName, String studentId, String studentName) {
+      String coachId,
+      String coachName,
+      String studentId,
+      String studentName,
+      String organizationId) {
     logAction(
         ActionType.CREATE_STUDENT,
         coachId,
@@ -303,11 +461,13 @@ public class ActivityLogServiceImpl implements ActivityLogService {
         String.format("Created new student: %s", studentName),
         EntityType.USER,
         studentId,
-        studentName);
+        studentName,
+        organizationId);
   }
 
   @Override
-  public void logBatchCreation(String coachId, String coachName, String batchId, String batchName) {
+  public void logBatchCreation(
+      String coachId, String coachName, String batchId, String batchName, String organizationId) {
     logAction(
         ActionType.CREATE_BATCH,
         coachId,
@@ -316,7 +476,8 @@ public class ActivityLogServiceImpl implements ActivityLogService {
         String.format("Created new batch: %s", batchName),
         EntityType.BATCH,
         batchId,
-        batchName);
+        batchName,
+        organizationId);
   }
 
   @Override
@@ -326,7 +487,8 @@ public class ActivityLogServiceImpl implements ActivityLogService {
       String studentId,
       String studentName,
       String batchId,
-      String batchName) {
+      String batchName,
+      String organizationId) {
     logAction(
         ActionType.ENROLL_STUDENT,
         coachId,
@@ -335,7 +497,8 @@ public class ActivityLogServiceImpl implements ActivityLogService {
         String.format("Enrolled %s in %s", studentName, batchName),
         EntityType.ENROLLMENT,
         batchId + ":" + studentId,
-        String.format("%s -> %s", studentName, batchName));
+        String.format("%s -> %s", studentName, batchName),
+        organizationId);
   }
 
   @Override
@@ -347,7 +510,8 @@ public class ActivityLogServiceImpl implements ActivityLogService {
       String studentName,
       String batchId,
       String batchName,
-      double amount) {
+      double amount,
+      String organizationId) {
     logAction(
         ActionType.PAYMENT_RECEIVED,
         userId,
@@ -356,7 +520,8 @@ public class ActivityLogServiceImpl implements ActivityLogService {
         String.format("Payment received: ₹%.2f for %s in %s", amount, studentName, batchName),
         EntityType.PAYMENT,
         batchId + ":" + studentId,
-        String.format("₹%.2f", amount));
+        String.format("₹%.2f", amount),
+        organizationId);
   }
 
   private String generateLogId() {

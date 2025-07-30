@@ -22,7 +22,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/api/v1/activity-logs")
+@RequestMapping("/api/v1/organizations/{organizationId}/activity-logs")
 @CrossOrigin(origins = "*")
 @Slf4j
 @Tag(name = "Activity Log Management", description = "APIs for managing activity logs")
@@ -38,18 +38,13 @@ public class ActivityLogController {
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<PageResponseDTO<ActivityLogDTO>> getRecentActivities(
       @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType,
+      @PathVariable String organizationId,
       @RequestParam(value = "page", defaultValue = "0") int page,
       @RequestParam(value = "size", defaultValue = "20") int size) {
 
-    // Only coaches can view all activities
-    if (!"COACH".equals(userType)) {
-      return ResponseEntity.status(403).build();
-    }
-
     try {
       PageResponseDTO<ActivityLogDTO> activities =
-          activityLogService.getRecentActivities(page, size);
+          activityLogService.getRecentActivities(page, size, userId, organizationId);
       return ResponseEntity.ok(activities);
     } catch (Exception e) {
       log.error("evt=get_recent_activities_error userId={} error={}", userId, e.getMessage(), e);
@@ -66,18 +61,13 @@ public class ActivityLogController {
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<List<ActivityLogDTO>> getUserActivities(
       @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType,
+      @PathVariable String organizationId,
       @PathVariable String targetUserId,
       @RequestParam(value = "limit", defaultValue = "10") int limit) {
 
-    // Students can only view their own activities
-    if ("STUDENT".equals(userType) && !userId.equals(targetUserId)) {
-      return ResponseEntity.status(403).build();
-    }
-
     try {
       List<ActivityLogDTO> activities =
-          activityLogService.getRecentActivitiesByUser(targetUserId, limit);
+          activityLogService.getRecentActivitiesByUser(targetUserId, limit, userId, organizationId);
       return ResponseEntity.ok(activities);
     } catch (Exception e) {
       log.error(
@@ -97,10 +87,12 @@ public class ActivityLogController {
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<List<ActivityLogDTO>> getMyActivities(
       @Parameter(hidden = true) @RequestAttribute("userId") String userId,
+      @PathVariable String organizationId,
       @RequestParam(value = "limit", defaultValue = "10") int limit) {
 
     try {
-      List<ActivityLogDTO> activities = activityLogService.getRecentActivitiesByUser(userId, limit);
+      List<ActivityLogDTO> activities =
+          activityLogService.getRecentActivitiesByUser(userId, limit, userId, organizationId);
       return ResponseEntity.ok(activities);
     } catch (Exception e) {
       log.error("evt=get_my_activities_error userId={} error={}", userId, e.getMessage(), e);
@@ -116,18 +108,13 @@ public class ActivityLogController {
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<List<ActivityLogDTO>> getActivitiesByActionType(
       @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType,
+      @PathVariable String organizationId,
       @PathVariable ActionType actionType,
       @RequestParam(value = "limit", defaultValue = "20") int limit) {
 
-    // Only coaches can view activities by type
-    if (!"COACH".equals(userType)) {
-      return ResponseEntity.status(403).build();
-    }
-
     try {
       List<ActivityLogDTO> activities =
-          activityLogService.getActivitiesByActionType(actionType, limit);
+          activityLogService.getActivitiesByActionType(actionType, limit, userId, organizationId);
       return ResponseEntity.ok(activities);
     } catch (Exception e) {
       log.error(
@@ -149,19 +136,15 @@ public class ActivityLogController {
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<List<ActivityLogDTO>> getActivitiesByEntity(
       @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType,
+      @PathVariable String organizationId,
       @PathVariable EntityType entityType,
       @PathVariable String entityId,
       @RequestParam(value = "limit", defaultValue = "10") int limit) {
 
-    // Only coaches can view entity activities
-    if (!"COACH".equals(userType)) {
-      return ResponseEntity.status(403).build();
-    }
-
     try {
       List<ActivityLogDTO> activities =
-          activityLogService.getActivitiesByEntity(entityType, entityId, limit);
+          activityLogService.getActivitiesByEntity(
+              entityType, entityId, limit, userId, organizationId);
       return ResponseEntity.ok(activities);
     } catch (Exception e) {
       log.error(

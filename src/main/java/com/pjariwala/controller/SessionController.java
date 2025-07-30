@@ -29,169 +29,175 @@ import org.springframework.web.bind.annotation.RestController;
 
 @Slf4j
 @RestController
-@RequestMapping("/api/v1/sessions")
+@RequestMapping("/api/v1/organizations/{organizationId}/sessions")
 @CrossOrigin(origins = "*")
-@Tag(name = "Session Management", description = "APIs for managing chess sessions")
+@Tag(
+    name = "Session Management",
+    description = "APIs for managing chess sessions within organizations")
 public class SessionController {
 
   @Autowired private SessionService sessionService;
 
   @PostMapping
-  @Operation(summary = "Create a new session", description = "Creates a new session for a batch")
+  @Operation(
+      summary = "Create a new session",
+      description = "Creates a new session for a batch within an organization")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<SessionDTO> createSession(
+      @PathVariable String organizationId,
       @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType,
       @RequestBody SessionCreateRequest request) {
-    log.info(
-        "evt=create_session_request batchId={} userId={} userType={}",
-        request.getBatchId(),
-        userId,
-        userType);
 
-    SessionDTO session = sessionService.createSession(request, userId);
+    log.info(
+        "evt=create_session_request organizationId={} batchId={} userId={}",
+        organizationId,
+        request.getBatchId(),
+        userId);
+
+    SessionDTO session = sessionService.createSession(request, userId, organizationId);
     return ResponseEntity.ok(session);
   }
 
   @GetMapping("/{sessionId}")
-  @Operation(summary = "Get session by ID", description = "Retrieves a specific session by its ID")
+  @Operation(
+      summary = "Get session by ID",
+      description = "Retrieves a specific session by its ID within an organization")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<SessionDTO> getSessionById(
+      @PathVariable String organizationId,
       @PathVariable String sessionId,
-      @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType) {
-    log.info(
-        "evt=get_session_by_id_request sessionId={} userId={} userType={}",
-        sessionId,
-        userId,
-        userType);
+      @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
 
-    SessionDTO session = sessionService.getSessionById(sessionId, userId);
+    log.info(
+        "evt=get_session_by_id_request organizationId={} sessionId={} userId={}",
+        organizationId,
+        sessionId,
+        userId);
+
+    SessionDTO session = sessionService.getSessionById(sessionId, userId, organizationId);
     return ResponseEntity.ok(session);
   }
 
   @GetMapping("/batch/{batchId}")
   @Operation(
       summary = "Get sessions by batch",
-      description = "Retrieves all sessions for a specific batch")
+      description = "Retrieves all sessions for a specific batch within an organization")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<PageResponseDTO<SessionDTO>> getSessionsByBatch(
+      @PathVariable String organizationId,
       @PathVariable String batchId,
       @RequestParam(defaultValue = "0") int page,
       @RequestParam(defaultValue = "20") int size,
-      @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType) {
+      @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
+
     log.info(
-        "evt=get_sessions_by_batch_request batchId={} page={} size={} userId={} userType={}",
+        "evt=get_sessions_by_batch_request organizationId={} batchId={} page={} size={} userId={}",
+        organizationId,
         batchId,
         page,
         size,
-        userId,
-        userType);
+        userId);
 
     PageResponseDTO<SessionDTO> sessions =
-        sessionService.getSessionsByBatch(batchId, page, size, userId);
+        sessionService.getSessionsByBatch(batchId, page, size, userId, organizationId);
     return ResponseEntity.ok(sessions);
   }
 
   @GetMapping("/date-range")
   @Operation(
       summary = "Get sessions by date range",
-      description = "Retrieves sessions within a specified date range")
+      description = "Retrieves sessions within a specified date range within an organization")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<PageResponseDTO<SessionDTO>> getSessionsByDateRange(
+      @PathVariable String organizationId,
       @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
       @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
       @RequestParam(defaultValue = "0") int page,
       @RequestParam(defaultValue = "20") int size,
-      @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType) {
+      @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
+
     log.info(
-        "evt=get_sessions_by_date_range_request startDate={} endDate={} page={} size={}"
-            + " userId={} userType={}",
+        "evt=get_sessions_by_date_range_request organizationId={} startDate={} endDate={} page={}"
+            + " size={} userId={}",
+        organizationId,
         startDate,
         endDate,
         page,
         size,
-        userId,
-        userType);
+        userId);
 
     PageResponseDTO<SessionDTO> sessions =
-        sessionService.getSessionsByDateRange(startDate, endDate, page, size, userId);
+        sessionService.getSessionsByDateRange(
+            startDate, endDate, page, size, userId, organizationId);
     return ResponseEntity.ok(sessions);
   }
 
   @PutMapping("/{sessionId}")
-  @Operation(summary = "Update session", description = "Updates an existing session")
+  @Operation(
+      summary = "Update session",
+      description = "Updates an existing session within an organization")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<SessionDTO> updateSession(
+      @PathVariable String organizationId,
       @PathVariable String sessionId,
       @RequestBody SessionUpdateRequest request,
-      @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType) {
-    log.info(
-        "evt=update_session_request sessionId={} userId={} userType={}",
-        sessionId,
-        userId,
-        userType);
+      @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
 
-    SessionDTO session = sessionService.updateSession(sessionId, request, userId);
+    log.info(
+        "evt=update_session_request organizationId={} sessionId={} userId={}",
+        organizationId,
+        sessionId,
+        userId);
+
+    SessionDTO session = sessionService.updateSession(sessionId, request, userId, organizationId);
     return ResponseEntity.ok(session);
   }
 
   @DeleteMapping("/{sessionId}")
-  @Operation(summary = "Delete session", description = "Deletes an existing session")
+  @Operation(
+      summary = "Delete session",
+      description = "Deletes an existing session within an organization")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<Void> deleteSession(
+      @PathVariable String organizationId,
       @PathVariable String sessionId,
-      @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType) {
-    log.info(
-        "evt=delete_session_request sessionId={} userId={} userType={}",
-        sessionId,
-        userId,
-        userType);
+      @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
 
-    sessionService.deleteSession(sessionId, userId);
+    log.info(
+        "evt=delete_session_request organizationId={} sessionId={} userId={}",
+        organizationId,
+        sessionId,
+        userId);
+
+    sessionService.deleteSession(sessionId, userId, organizationId);
     return ResponseEntity.noContent().build();
   }
 
   @PostMapping("/batch/{batchId}/generate")
   @Operation(
       summary = "Generate sessions for batch",
-      description = "Generates multiple sessions for a batch within a date range")
+      description =
+          "Generates multiple sessions for a batch within a date range in an organization")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<List<SessionDTO>> generateSessionsForBatch(
+      @PathVariable String organizationId,
       @PathVariable String batchId,
       @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
       @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
-      @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType) {
+      @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
+
     log.info(
-        "evt=generate_sessions_for_batch_request batchId={} startDate={} endDate={}"
-            + " userId={} userType={}",
+        "evt=generate_sessions_for_batch_request organizationId={} batchId={} startDate={}"
+            + " endDate={} userId={}",
+        organizationId,
         batchId,
         startDate,
         endDate,
-        userId,
-        userType);
+        userId);
 
     List<SessionDTO> sessions =
-        sessionService.generateSessionsForBatch(batchId, startDate, endDate, userId);
-    return ResponseEntity.ok(sessions);
-  }
-
-  @GetMapping("/today")
-  @Operation(
-      summary = "Get today's sessions",
-      description = "Retrieves all sessions scheduled for today")
-  @SecurityRequirement(name = "bearerAuth")
-  public ResponseEntity<List<SessionDTO>> getTodaysSessions(
-      @Parameter(hidden = true) @RequestAttribute("userId") String userId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType) {
-    log.info("evt=get_todays_sessions_request userId={} userType={}", userId, userType);
-
-    List<SessionDTO> sessions = sessionService.getTodaysSessions(userId);
+        sessionService.generateSessionsForBatch(
+            batchId, startDate, endDate, userId, organizationId);
     return ResponseEntity.ok(sessions);
   }
 }

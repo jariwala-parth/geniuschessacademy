@@ -1,5 +1,6 @@
 package com.pjariwala.dto;
 
+import java.util.List;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -7,9 +8,6 @@ import lombok.NoArgsConstructor;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class UserInfo {
-  private String userId;
-  private String email;
-  private String name;
-  private String phoneNumber;
+public class UserOrganizationsResponse {
+  private List<UserOrganizationInfo> organizations;
 }

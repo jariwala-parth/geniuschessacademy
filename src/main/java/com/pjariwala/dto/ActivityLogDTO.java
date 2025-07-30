@@ -18,6 +18,7 @@ import lombok.NoArgsConstructor;
 @Builder
 public class ActivityLogDTO {
   private String logId;
+  private String organizationId;
 
   @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
   private LocalDateTime timestamp;
@@ -37,6 +38,7 @@ public class ActivityLogDTO {
   public static ActivityLogDTO fromActivityLog(ActivityLog log) {
     return ActivityLogDTO.builder()
         .logId(log.getLogId())
+        .organizationId(log.getOrganizationId())
         .timestamp(log.getTimestamp())
         .userId(log.getUserId())
         .actionType(log.getActionType())

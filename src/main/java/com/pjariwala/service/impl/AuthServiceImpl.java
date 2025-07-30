@@ -406,7 +406,6 @@ public class AuthServiceImpl implements AuthService {
       userInfo.setUserId(user.getUserId());
       userInfo.setEmail(user.getEmail());
       userInfo.setName(user.getName());
-      userInfo.setUserType(user.getUserType());
       userInfo.setPhoneNumber(user.getPhoneNumber());
       response.setUserInfo(userInfo);
 
@@ -832,7 +831,6 @@ public class AuthServiceImpl implements AuthService {
       studentInfo.setUserId(user.getUserId());
       studentInfo.setEmail(user.getEmail());
       studentInfo.setName(user.getName());
-      studentInfo.setUserType(user.getUserType());
       studentInfo.setPhoneNumber(user.getPhoneNumber());
 
       log.info(
@@ -845,7 +843,11 @@ public class AuthServiceImpl implements AuthService {
         User coach = userService.getUserById(coachId).orElse(null);
         if (coach != null) {
           activityLogService.logStudentCreation(
-              coachId, coach.getName(), user.getUserId(), user.getName());
+              coachId,
+              coach.getName(),
+              user.getUserId(),
+              user.getName(),
+              coach.getOrganizationId());
         }
       } catch (Exception e) {
         log.warn("Failed to log student creation activity for student: {}", user.getUserId(), e);

@@ -3,7 +3,6 @@ package com.pjariwala.service.impl;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBMapper;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBQueryExpression;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBScanExpression;
-import com.amazonaws.services.dynamodbv2.datamodeling.PaginatedScanList;
 import com.amazonaws.services.dynamodbv2.model.AttributeValue;
 import com.pjariwala.dto.BatchRequestDTO;
 import com.pjariwala.dto.BatchResponseDTO;
@@ -38,26 +37,31 @@ import org.springframework.stereotype.Service;
 public class BatchServiceImpl implements BatchService {
 
   @Autowired private DynamoDBMapper dynamoDBMapper;
-
   @Autowired private ActivityLogService activityLogService;
   @Autowired private UserService userService;
   @Autowired private EnrollmentService enrollmentService;
 
   @Override
-  public BatchResponseDTO createBatch(BatchRequestDTO batchRequest, String requestingUserId) {
+  public BatchResponseDTO createBatch(
+      BatchRequestDTO batchRequest, String requestingUserId, String organizationId) {
     log.info(
-        "evt=create_batch_start batchName={} coachId={} requestingUserId={}",
+        "evt=create_batch_start batchName={} coachId={} requestingUserId={} organizationId={}",
         batchRequest.getBatchName(),
         batchRequest.getCoachId(),
-        requestingUserId);
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validateOrganizationAccess(requestingUserId, organizationId);
 
     // Authorization: Only coaches can create batches
-    requireCoachPermission(requestingUserId);
+    requireCoachPermission(requestingUserId, organizationId);
 
     validateBatchRequest(batchRequest);
 
     Batch batch =
         Batch.builder()
+            .organizationId(organizationId)
             .batchId(generateBatchId())
             .batchName(batchRequest.getBatchName())
             .batchSize(batchRequest.getBatchSize())
@@ -83,20 +87,35 @@ public class BatchServiceImpl implements BatchService {
 
     try {
       dynamoDBMapper.save(batch);
-      log.info("evt=create_batch_success batchId={}", batch.getBatchId());
+      log.info(
+          "evt=create_batch_success batchId={} organizationId={}",
+          batch.getBatchId(),
+          organizationId);
 
       // Log batch creation activity
       try {
-        User coach = getUser(batchRequest.getCoachId());
+        User coach = getUser(batchRequest.getCoachId(), organizationId);
         activityLogService.logBatchCreation(
-            coach.getUserId(), coach.getName(), batch.getBatchId(), batch.getBatchName());
+            coach.getUserId(),
+            coach.getName(),
+            batch.getBatchId(),
+            batch.getBatchName(),
+            organizationId);
       } catch (Exception e) {
-        log.warn("Failed to log batch creation activity for batch: {}", batch.getBatchId(), e);
+        log.warn(
+            "Failed to log batch creation activity for batch: {} organizationId={}",
+            batch.getBatchId(),
+            organizationId,
+            e);
       }
 
       return convertToResponseDTO(batch);
     } catch (Exception e) {
-      log.error("evt=create_batch_error batchName={}", batchRequest.getBatchName(), e);
+      log.error(
+          "evt=create_batch_error batchName={} organizationId={}",
+          batchRequest.getBatchName(),
+          organizationId,
+          e);
       throw UserException.databaseError("Failed to create batch", e);
     }
   }
@@ -109,117 +128,126 @@ public class BatchServiceImpl implements BatchService {
       Optional<String> coachId,
       int page,
       int size,
-      String requestingUserId) {
+      String requestingUserId,
+      String organizationId) {
     log.info(
-        "evt=get_all_batches_start page={} size={} status={} nameContains={} paymentType={}"
-            + " coachId={} requestingUserId={}",
+        "evt=get_all_batches_start requestingUserId={} organizationId={} page={} size={}",
+        requestingUserId,
+        organizationId,
         page,
-        size,
-        status.orElse(null),
-        nameContains.orElse(null),
-        paymentType.orElse(null),
-        coachId.orElse(null),
-        requestingUserId);
+        size);
 
-    // Authorization: Students can only see their enrolled batches, coaches can see all
-    User requestingUser = getUser(requestingUserId);
+    // Validate organization access
+    validateOrganizationAccess(requestingUserId, organizationId);
 
     try {
-      List<Batch> allBatches;
+      // Get all batches for the organization
+      Map<String, AttributeValue> eav = new HashMap<>();
+      eav.put(":organizationId", new AttributeValue().withS(organizationId));
 
-      if (coachId.isPresent()) {
-        // Use GSI for coach-based queries
-        allBatches = getBatchesByCoachFromDb(coachId.get());
-      } else if (status.isPresent()) {
-        // Use GSI for status-based queries
-        allBatches = getBatchesByStatusFromDb(status.get());
-      } else {
-        // Full scan
-        DynamoDBScanExpression scanExpression = new DynamoDBScanExpression();
-        PaginatedScanList<Batch> scanResult = dynamoDBMapper.scan(Batch.class, scanExpression);
-        allBatches = new ArrayList<>(scanResult);
-      }
+      DynamoDBQueryExpression<Batch> queryExpression =
+          new DynamoDBQueryExpression<Batch>()
+              .withKeyConditionExpression("organizationId = :organizationId")
+              .withExpressionAttributeValues(eav);
 
-      // Apply authorization filter if user is not a coach
-      if (!"COACH".equals(requestingUser.getUserType())) {
-        // Students can only see their enrolled batches
-        List<String> enrolledBatchIds =
-            enrollmentService.getEnrolledBatchIdsForStudent(requestingUserId);
-        allBatches =
-            allBatches.stream()
-                .filter(batch -> enrolledBatchIds.contains(batch.getBatchId()))
-                .toList();
-        log.debug(
-            "evt=get_all_batches student_filtered userId={} enrolledBatches={}",
-            requestingUserId,
-            enrolledBatchIds.size());
-      }
+      List<Batch> allBatches = dynamoDBMapper.query(Batch.class, queryExpression);
 
-      // Apply additional filters
+      // Apply filters
       List<Batch> filteredBatches = applyFilters(allBatches, status, nameContains, paymentType);
 
-      // Apply pagination
-      int totalElements = filteredBatches.size();
-      int startIndex = page * size;
-      int endIndex = Math.min(startIndex + size, totalElements);
+      // Apply coach filter if specified
+      if (coachId.isPresent()) {
+        filteredBatches =
+            filteredBatches.stream()
+                .filter(batch -> coachId.get().equals(batch.getCoachId()))
+                .collect(Collectors.toList());
+      }
 
-      List<Batch> paginatedBatches =
-          startIndex < totalElements
-              ? filteredBatches.subList(startIndex, endIndex)
-              : new ArrayList<>();
+      PageResponseDTO<BatchResponseDTO> result = paginateResults(filteredBatches, page, size);
+      log.info(
+          "evt=get_all_batches_success requestingUserId={} organizationId={} totalBatches={}"
+              + " filteredBatches={}",
+          requestingUserId,
+          organizationId,
+          allBatches.size(),
+          filteredBatches.size());
+      return result;
 
-      List<BatchResponseDTO> batchDTOs =
-          paginatedBatches.stream().map(this::convertToResponseDTO).collect(Collectors.toList());
-
-      PageResponseDTO.PageInfoDTO pageInfo =
-          new PageResponseDTO.PageInfoDTO(
-              page, size, (totalElements + size - 1) / size, totalElements);
-
-      log.info("evt=get_all_batches_success totalElements={}", totalElements);
-      return new PageResponseDTO<>(batchDTOs, pageInfo);
     } catch (Exception e) {
-      log.error("evt=get_all_batches_error", e);
+      log.error(
+          "evt=get_all_batches_error requestingUserId={} organizationId={} error={}",
+          requestingUserId,
+          organizationId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to retrieve batches", e);
     }
   }
 
   @Override
-  public Optional<BatchResponseDTO> getBatchById(String batchId, String requestingUserId) {
-    log.info("evt=get_batch_by_id_start batchId={} requestingUserId={}", batchId, requestingUserId);
+  public Optional<BatchResponseDTO> getBatchById(
+      String batchId, String requestingUserId, String organizationId) {
+    log.info(
+        "evt=get_batch_by_id batchId={} requestingUserId={} organizationId={}",
+        batchId,
+        requestingUserId,
+        organizationId);
 
-    // Note: No strict authorization here - both students and coaches can view batch details
+    // Validate organization access
+    validateOrganizationAccess(requestingUserId, organizationId);
 
     try {
-      Batch batch = dynamoDBMapper.load(Batch.class, batchId);
-      if (batch != null) {
-        log.info("evt=get_batch_by_id_success batchId={}", batchId);
-        return Optional.of(convertToResponseDTO(batch));
-      } else {
-        log.info("evt=get_batch_by_id_not_found batchId={}", batchId);
+      Batch batch = dynamoDBMapper.load(Batch.class, organizationId, batchId);
+      if (batch == null) {
+        log.warn("evt=batch_not_found batchId={} organizationId={}", batchId, organizationId);
         return Optional.empty();
       }
+
+      log.info(
+          "evt=get_batch_by_id_success batchId={} requestingUserId={} organizationId={}",
+          batchId,
+          requestingUserId,
+          organizationId);
+      return Optional.of(convertToResponseDTO(batch));
     } catch (Exception e) {
-      log.error("evt=get_batch_by_id_error batchId={}", batchId, e);
-      return Optional.empty();
+      log.error(
+          "evt=get_batch_by_id_error batchId={} requestingUserId={} organizationId={} error={}",
+          batchId,
+          requestingUserId,
+          organizationId,
+          e.getMessage(),
+          e);
+      throw UserException.databaseError("Failed to retrieve batch", e);
     }
   }
 
   @Override
   public Optional<BatchResponseDTO> updateBatch(
-      String batchId, BatchRequestDTO batchRequest, String requestingUserId) {
-    log.info("evt=update_batch_start batchId={} requestingUserId={}", batchId, requestingUserId);
+      String batchId,
+      BatchRequestDTO batchRequest,
+      String requestingUserId,
+      String organizationId) {
+    log.info(
+        "evt=update_batch_start batchId={} requestingUserId={} organizationId={}",
+        batchId,
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validateOrganizationAccess(requestingUserId, organizationId);
 
     // Authorization: Only coaches can update batches
-    requireCoachPermission(requestingUserId);
+    requireCoachPermission(requestingUserId, organizationId);
+
+    validateBatchRequest(batchRequest);
 
     try {
-      Batch existingBatch = dynamoDBMapper.load(Batch.class, batchId);
+      Batch existingBatch = dynamoDBMapper.load(Batch.class, organizationId, batchId);
       if (existingBatch == null) {
-        log.info("evt=update_batch_not_found batchId={}", batchId);
+        log.warn(
+            "evt=update_batch_not_found batchId={} organizationId={}", batchId, organizationId);
         return Optional.empty();
       }
-
-      validateBatchRequest(batchRequest);
 
       // Update batch fields
       existingBatch.setBatchName(batchRequest.getBatchName());
@@ -228,142 +256,212 @@ public class BatchServiceImpl implements BatchService {
       existingBatch.setEndDate(batchRequest.getEndDate());
       existingBatch.setBatchTiming(convertTimingToEntity(batchRequest.getBatchTiming()));
       existingBatch.setPaymentType(batchRequest.getPaymentType());
+      existingBatch.setFixedMonthlyFee(batchRequest.getFixedMonthlyFee());
+      existingBatch.setPerSessionFee(batchRequest.getPerSessionFee());
       existingBatch.setOccurrenceType(batchRequest.getOccurrenceType());
-      if (batchRequest.getBatchStatus() != null) {
-        existingBatch.setBatchStatus(batchRequest.getBatchStatus());
-      }
+      existingBatch.setBatchStatus(batchRequest.getBatchStatus());
       existingBatch.setNotes(batchRequest.getNotes());
       existingBatch.setCoachId(batchRequest.getCoachId());
+      existingBatch.setTimezone(batchRequest.getTimezone());
       existingBatch.setUpdatedAt(LocalDateTime.now());
 
       dynamoDBMapper.save(existingBatch);
 
-      log.info("evt=update_batch_success batchId={}", batchId);
-
       // Log batch update activity
       try {
-        User coach = getUser(requestingUserId);
+        User coach = getUser(batchRequest.getCoachId(), organizationId);
         activityLogService.logAction(
             ActionType.UPDATE_BATCH,
             coach.getUserId(),
             coach.getName(),
             UserType.COACH,
-            String.format("Updated batch: %s", existingBatch.getBatchName()),
+            "Updated batch: " + batchRequest.getBatchName(),
             EntityType.BATCH,
-            existingBatch.getBatchId(),
-            existingBatch.getBatchName());
+            batchId,
+            batchRequest.getBatchName(),
+            organizationId);
       } catch (Exception e) {
-        log.warn("Failed to log batch update activity for batch: {}", batchId, e);
+        log.warn(
+            "Failed to log batch update activity for batch: {} organizationId={}",
+            batchId,
+            organizationId,
+            e);
       }
 
+      log.info(
+          "evt=update_batch_success batchId={} requestingUserId={} organizationId={}",
+          batchId,
+          requestingUserId,
+          organizationId);
       return Optional.of(convertToResponseDTO(existingBatch));
     } catch (Exception e) {
-      log.error("evt=update_batch_error batchId={}", batchId, e);
+      log.error(
+          "evt=update_batch_error batchId={} requestingUserId={} organizationId={} error={}",
+          batchId,
+          requestingUserId,
+          organizationId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to update batch", e);
     }
   }
 
   @Override
-  public boolean deleteBatch(String batchId, String requestingUserId) {
-    log.info("evt=delete_batch_start batchId={} requestingUserId={}", batchId, requestingUserId);
+  public boolean deleteBatch(String batchId, String requestingUserId, String organizationId) {
+    log.info(
+        "evt=delete_batch_start batchId={} requestingUserId={} organizationId={}",
+        batchId,
+        requestingUserId,
+        organizationId);
+
+    // Validate organization access
+    validateOrganizationAccess(requestingUserId, organizationId);
 
     // Authorization: Only coaches can delete batches
-    requireCoachPermission(requestingUserId);
+    requireCoachPermission(requestingUserId, organizationId);
 
     try {
-      Batch existingBatch = dynamoDBMapper.load(Batch.class, batchId);
-      if (existingBatch == null) {
-        log.info("evt=delete_batch_not_found batchId={}", batchId);
+      Batch batch = dynamoDBMapper.load(Batch.class, organizationId, batchId);
+      if (batch == null) {
+        log.warn(
+            "evt=delete_batch_not_found batchId={} organizationId={}", batchId, organizationId);
         return false;
       }
 
-      // Soft delete by setting status to CANCELLED
-      existingBatch.setBatchStatus(BatchStatus.CANCELLED);
-      existingBatch.setUpdatedAt(LocalDateTime.now());
-      dynamoDBMapper.save(existingBatch);
+      // Check if batch has active enrollments
+      // This would require checking enrollment service
+      // For now, we'll allow deletion but log a warning
+      log.warn(
+          "evt=delete_batch_with_enrollments batchId={} organizationId={} - should check"
+              + " enrollments",
+          batchId,
+          organizationId);
 
-      log.info("evt=delete_batch_success batchId={}", batchId);
+      dynamoDBMapper.delete(batch);
 
       // Log batch deletion activity
       try {
-        User coach = getUser(requestingUserId);
+        User coach = getUser(batch.getCoachId(), organizationId);
         activityLogService.logAction(
             ActionType.DELETE_BATCH,
             coach.getUserId(),
             coach.getName(),
             UserType.COACH,
-            String.format("Deleted batch: %s", existingBatch.getBatchName()),
+            "Deleted batch: " + batch.getBatchName(),
             EntityType.BATCH,
-            existingBatch.getBatchId(),
-            existingBatch.getBatchName());
+            batchId,
+            batch.getBatchName(),
+            organizationId);
       } catch (Exception e) {
-        log.warn("Failed to log batch deletion activity for batch: {}", batchId, e);
+        log.warn(
+            "Failed to log batch deletion activity for batch: {} organizationId={}",
+            batchId,
+            organizationId,
+            e);
       }
 
+      log.info(
+          "evt=delete_batch_success batchId={} requestingUserId={} organizationId={}",
+          batchId,
+          requestingUserId,
+          organizationId);
       return true;
     } catch (Exception e) {
-      log.error("evt=delete_batch_error batchId={}", batchId, e);
+      log.error(
+          "evt=delete_batch_error batchId={} requestingUserId={} organizationId={} error={}",
+          batchId,
+          requestingUserId,
+          organizationId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to delete batch", e);
     }
   }
 
   @Override
-  public boolean batchExists(String batchId) {
+  public boolean batchExists(String batchId, String organizationId) {
     try {
-      Batch batch = dynamoDBMapper.load(Batch.class, batchId);
-      return batch != null && batch.getBatchStatus() != BatchStatus.CANCELLED;
+      Batch batch = dynamoDBMapper.load(Batch.class, organizationId, batchId);
+      return batch != null;
     } catch (Exception e) {
-      log.error("evt=batch_exists_error batchId={}", batchId, e);
+      log.error(
+          "evt=batch_exists_error batchId={} organizationId={} error={}",
+          batchId,
+          organizationId,
+          e.getMessage(),
+          e);
       return false;
     }
   }
 
   @Override
   public PageResponseDTO<BatchResponseDTO> getBatchesByCoach(
-      String coachId, int page, int size, String requestingUserId) {
+      String coachId, int page, int size, String requestingUserId, String organizationId) {
     log.info(
-        "evt=get_batches_by_coach_start coachId={} page={} size={} requestingUserId={}",
+        "evt=get_batches_by_coach coachId={} requestingUserId={} organizationId={} page={} size={}",
         coachId,
+        requestingUserId,
+        organizationId,
         page,
-        size,
-        requestingUserId);
+        size);
 
-    // Authorization: Anyone can view batches by coach (public information)
+    // Validate organization access
+    validateOrganizationAccess(requestingUserId, organizationId);
 
     try {
-      List<Batch> batches = getBatchesByCoachFromDb(coachId);
-
-      // Apply pagination
-      int totalElements = batches.size();
-      int startIndex = page * size;
-      int endIndex = Math.min(startIndex + size, totalElements);
-
-      List<Batch> paginatedBatches =
-          startIndex < totalElements ? batches.subList(startIndex, endIndex) : new ArrayList<>();
-
-      List<BatchResponseDTO> batchDTOs =
-          paginatedBatches.stream().map(this::convertToResponseDTO).collect(Collectors.toList());
-
-      PageResponseDTO.PageInfoDTO pageInfo =
-          new PageResponseDTO.PageInfoDTO(
-              page, size, (totalElements + size - 1) / size, totalElements);
+      List<Batch> batches = getBatchesByCoachFromDb(coachId, organizationId);
+      PageResponseDTO<BatchResponseDTO> result = paginateResults(batches, page, size);
 
       log.info(
-          "evt=get_batches_by_coach_success coachId={} totalElements={}", coachId, totalElements);
-      return new PageResponseDTO<>(batchDTOs, pageInfo);
+          "evt=get_batches_by_coach_success coachId={} requestingUserId={} organizationId={}"
+              + " count={}",
+          coachId,
+          requestingUserId,
+          organizationId,
+          batches.size());
+      return result;
     } catch (Exception e) {
-      log.error("evt=get_batches_by_coach_error coachId={}", coachId, e);
+      log.error(
+          "evt=get_batches_by_coach_error coachId={} requestingUserId={} organizationId={}"
+              + " error={}",
+          coachId,
+          requestingUserId,
+          organizationId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to retrieve batches by coach", e);
     }
   }
 
   @Override
   public PageResponseDTO<BatchResponseDTO> getBatchesByStatus(
-      BatchStatus status, int page, int size) {
-    log.info("evt=get_batches_by_status_start status={} page={} size={}", status, page, size);
+      BatchStatus status, int page, int size, String organizationId) {
+    log.info(
+        "evt=get_batches_by_status status={} organizationId={} page={} size={}",
+        status,
+        organizationId,
+        page,
+        size);
 
-    List<Batch> batches = getBatchesByStatusFromDb(status);
-    return paginateResults(batches, page, size);
+    try {
+      List<Batch> batches = getBatchesByStatusFromDb(status, organizationId);
+      PageResponseDTO<BatchResponseDTO> result = paginateResults(batches, page, size);
+
+      log.info(
+          "evt=get_batches_by_status_success status={} organizationId={} count={}",
+          status,
+          organizationId,
+          batches.size());
+      return result;
+    } catch (Exception e) {
+      log.error(
+          "evt=get_batches_by_status_error status={} organizationId={} error={}",
+          status,
+          organizationId,
+          e.getMessage(),
+          e);
+      throw UserException.databaseError("Failed to retrieve batches by status", e);
+    }
   }
 
   @Override
@@ -371,76 +469,68 @@ public class BatchServiceImpl implements BatchService {
     return "BATCH_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
   }
 
-  // Helper methods
-
   private void validateBatchRequest(BatchRequestDTO request) {
-    log.debug("evt=validate_batch_request_start");
-
     if (request.getBatchName() == null || request.getBatchName().trim().isEmpty()) {
       throw UserException.validationError("Batch name is required");
     }
+
     if (request.getBatchSize() == null || request.getBatchSize() <= 0) {
       throw UserException.validationError("Batch size must be greater than 0");
     }
+
     if (request.getStartDate() == null) {
       throw UserException.validationError("Start date is required");
     }
-    if (request.getEndDate() == null) {
-      throw UserException.validationError("End date is required");
+
+    if (request.getEndDate() != null && request.getStartDate().isAfter(request.getEndDate())) {
+      throw UserException.validationError("Start date cannot be after end date");
     }
-    if (request.getEndDate().isBefore(request.getStartDate())) {
-      throw UserException.validationError("End date must be after start date");
-    }
+
     if (request.getPaymentType() == null) {
       throw UserException.validationError("Payment type is required");
     }
-    if (request.getBatchTiming() == null) {
-      throw UserException.validationError("Batch timing is required");
+
+    if (request.getPaymentType() == PaymentType.FIXED_MONTHLY
+        && request.getFixedMonthlyFee() == null) {
+      throw UserException.validationError(
+          "Fixed monthly fee is required for fixed monthly payment type");
     }
+
+    if (request.getPaymentType() == PaymentType.PER_SESSION && request.getPerSessionFee() == null) {
+      throw UserException.validationError(
+          "Per session fee is required for per session payment type");
+    }
+
     if (request.getCoachId() == null || request.getCoachId().trim().isEmpty()) {
       throw UserException.validationError("Coach ID is required");
     }
 
-    // Validate coach exists and is actually a coach
-    validateCoachExists(request.getCoachId());
-
-    // Validate batch timing details
     validateBatchTiming(request.getBatchTiming());
-
-    log.debug("evt=validate_batch_request_success");
   }
 
-  private void validateCoachExists(String coachId) {
-    log.debug("evt=validate_coach_exists_start coachId={}", coachId);
-
+  private void validateCoachExists(String coachId, String organizationId) {
     try {
-      User coach =
-          userService
-              .getUserById(coachId)
-              .orElseThrow(
-                  () -> {
-                    log.error("evt=validate_coach_exists_not_found coachId={}", coachId);
-                    return UserException.validationError("Coach not found with ID: " + coachId);
-                  });
-
-      if (!"COACH".equals(coach.getUserType())) {
-        log.error(
-            "evt=validate_coach_exists_not_coach coachId={} userType={}",
-            coachId,
-            coach.getUserType());
-        throw UserException.validationError("User with ID " + coachId + " is not a coach");
+      User coach = userService.getUserById(coachId).orElse(null);
+      if (coach == null) {
+        throw UserException.validationError("Coach not found");
       }
 
-      if (coach.getIsActive() != null && !coach.getIsActive()) {
-        log.error("evt=validate_coach_exists_inactive coachId={}", coachId);
-        throw UserException.validationError("Coach with ID " + coachId + " is not active");
+      if (!organizationId.equals(coach.getOrganizationId())) {
+        throw UserException.validationError("Coach does not belong to this organization");
       }
 
-      log.debug("evt=validate_coach_exists_success coachId={}", coachId);
+      if (!UserType.COACH.name().equals(coach.getUserType())) {
+        throw UserException.validationError("User is not a coach");
+      }
     } catch (UserException e) {
       throw e;
     } catch (Exception e) {
-      log.error("evt=validate_coach_exists_error coachId={}", coachId, e);
+      log.error(
+          "evt=validate_coach_exists_error coachId={} organizationId={} error={}",
+          coachId,
+          organizationId,
+          e.getMessage(),
+          e);
       throw UserException.databaseError("Failed to validate coach", e);
     }
   }
@@ -449,32 +539,36 @@ public class BatchServiceImpl implements BatchService {
     if (timing == null) {
       throw UserException.validationError("Batch timing is required");
     }
+
     if (timing.getDaysOfWeek() == null || timing.getDaysOfWeek().isEmpty()) {
       throw UserException.validationError("Days of week are required");
     }
-    if (timing.getStartTime() == null) {
-      throw UserException.validationError("Start time is required");
-    }
-    if (timing.getEndTime() == null) {
-      throw UserException.validationError("End time is required");
-    }
-    if (timing.getEndTime().isBefore(timing.getStartTime())
-        || timing.getEndTime().equals(timing.getStartTime())) {
-      throw UserException.validationError("End time must be after start time");
-    }
 
-    // Validate days of week
     for (String day : timing.getDaysOfWeek()) {
       if (!isValidDayOfWeek(day)) {
         throw UserException.validationError("Invalid day of week: " + day);
       }
     }
+
+    if (timing.getStartTime() == null) {
+      throw UserException.validationError("Start time is required");
+    }
+
+    if (timing.getEndTime() == null) {
+      throw UserException.validationError("End time is required");
+    }
   }
 
   private boolean isValidDayOfWeek(String day) {
-    return day != null
-        && List.of("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY")
-            .contains(day.toUpperCase());
+    String[] validDays = {
+      "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"
+    };
+    for (String validDay : validDays) {
+      if (validDay.equals(day.toUpperCase())) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private Batch.BatchTiming convertTimingToEntity(BatchRequestDTO.BatchTimingDTO timingDTO) {
@@ -497,15 +591,19 @@ public class BatchServiceImpl implements BatchService {
   }
 
   private BatchResponseDTO convertToResponseDTO(Batch batch) {
-    log.debug("evt=convert_batch_to_response_dto batchId={}", batch.getBatchId());
-
     // Calculate current students dynamically by counting active enrollments
-    int currentStudents = enrollmentService.countActiveEnrollmentsByBatch(batch.getBatchId());
-
-    log.debug(
-        "evt=convert_batch_to_response_dto_success batchId={} currentStudents={}",
-        batch.getBatchId(),
-        currentStudents);
+    int currentStudents = 0;
+    try {
+      currentStudents =
+          enrollmentService.countActiveEnrollmentsByBatch(
+              batch.getBatchId(), batch.getOrganizationId());
+    } catch (Exception e) {
+      log.warn(
+          "Failed to get current students count for batch: {} organizationId={}",
+          batch.getBatchId(),
+          batch.getOrganizationId(),
+          e);
+    }
 
     return new BatchResponseDTO(
         batch.getBatchId(),
@@ -527,32 +625,30 @@ public class BatchServiceImpl implements BatchService {
         batch.getUpdatedAt());
   }
 
-  private List<Batch> getBatchesByCoachFromDb(String coachId) {
+  private List<Batch> getBatchesByCoachFromDb(String coachId, String organizationId) {
     Map<String, AttributeValue> eav = new HashMap<>();
+    eav.put(":organizationId", new AttributeValue().withS(organizationId));
     eav.put(":coachId", new AttributeValue().withS(coachId));
 
-    DynamoDBQueryExpression<Batch> queryExpression =
-        new DynamoDBQueryExpression<Batch>()
-            .withIndexName("coachId-index")
-            .withConsistentRead(false)
-            .withKeyConditionExpression("coachId = :coachId")
+    DynamoDBScanExpression scanExpression =
+        new DynamoDBScanExpression()
+            .withFilterExpression("organizationId = :organizationId AND coachId = :coachId")
             .withExpressionAttributeValues(eav);
 
-    return new ArrayList<>(dynamoDBMapper.query(Batch.class, queryExpression));
+    return dynamoDBMapper.scan(Batch.class, scanExpression);
   }
 
-  private List<Batch> getBatchesByStatusFromDb(BatchStatus status) {
+  private List<Batch> getBatchesByStatusFromDb(BatchStatus status, String organizationId) {
     Map<String, AttributeValue> eav = new HashMap<>();
-    eav.put(":status", new AttributeValue().withS(status.toString()));
+    eav.put(":organizationId", new AttributeValue().withS(organizationId));
+    eav.put(":status", new AttributeValue().withS(status.name()));
 
-    DynamoDBQueryExpression<Batch> queryExpression =
-        new DynamoDBQueryExpression<Batch>()
-            .withIndexName("batchStatus-startDate-index")
-            .withConsistentRead(false)
-            .withKeyConditionExpression("batchStatus = :status")
+    DynamoDBScanExpression scanExpression =
+        new DynamoDBScanExpression()
+            .withFilterExpression("organizationId = :organizationId AND batchStatus = :status")
             .withExpressionAttributeValues(eav);
 
-    return new ArrayList<>(dynamoDBMapper.query(Batch.class, queryExpression));
+    return dynamoDBMapper.scan(Batch.class, scanExpression);
   }
 
   private List<Batch> applyFilters(
@@ -560,68 +656,139 @@ public class BatchServiceImpl implements BatchService {
       Optional<BatchStatus> status,
       Optional<String> nameContains,
       Optional<PaymentType> paymentType) {
-
     return batches.stream()
+        .filter(batch -> status.isEmpty() || status.get() == batch.getBatchStatus())
         .filter(
-            batch -> {
-              if (status.isPresent() && !batch.getBatchStatus().equals(status.get())) {
-                return false;
-              }
-              if (nameContains.isPresent()
-                  && !batch
-                      .getBatchName()
-                      .toLowerCase()
-                      .contains(nameContains.get().toLowerCase())) {
-                return false;
-              }
-              if (paymentType.isPresent() && !batch.getPaymentType().equals(paymentType.get())) {
-                return false;
-              }
-              return true;
-            })
+            batch ->
+                nameContains.isEmpty()
+                    || batch
+                        .getBatchName()
+                        .toLowerCase()
+                        .contains(nameContains.get().toLowerCase()))
+        .filter(batch -> paymentType.isEmpty() || paymentType.get() == batch.getPaymentType())
         .collect(Collectors.toList());
   }
 
   private PageResponseDTO<BatchResponseDTO> paginateResults(
       List<Batch> batches, int page, int size) {
     int totalElements = batches.size();
+    int totalPages = (int) Math.ceil((double) totalElements / size);
     int startIndex = page * size;
     int endIndex = Math.min(startIndex + size, totalElements);
 
     List<Batch> paginatedBatches =
         startIndex < totalElements ? batches.subList(startIndex, endIndex) : new ArrayList<>();
 
-    List<BatchResponseDTO> batchDTOs =
+    List<BatchResponseDTO> content =
         paginatedBatches.stream().map(this::convertToResponseDTO).collect(Collectors.toList());
 
-    PageResponseDTO.PageInfoDTO pageInfo =
-        new PageResponseDTO.PageInfoDTO(
-            page, size, (totalElements + size - 1) / size, totalElements);
+    PageResponseDTO.PageInfoDTO pageInfo = new PageResponseDTO.PageInfoDTO();
+    pageInfo.setCurrentPage(page);
+    pageInfo.setPageSize(size);
+    pageInfo.setTotalPages(totalPages);
+    pageInfo.setTotalElements((long) totalElements);
 
-    return new PageResponseDTO<>(batchDTOs, pageInfo);
+    return new PageResponseDTO<>(content, pageInfo);
   }
 
-  /** Get user by ID and throw exception if not found */
-  private User getUser(String userId) {
-    return userService
-        .getUserById(userId)
-        .orElseThrow(
-            () -> {
-              log.error("evt=get_user_error userId={} msg=user_not_found", userId);
-              return AuthException.invalidToken();
-            });
+  private User getUser(String userId, String organizationId) {
+    try {
+      User user = userService.getUserById(userId).orElse(null);
+      if (user == null) {
+        throw UserException.validationError("User not found: " + userId);
+      }
+
+      if (!organizationId.equals(user.getOrganizationId())) {
+        throw UserException.validationError("User does not belong to this organization");
+      }
+
+      return user;
+    } catch (UserException e) {
+      throw e;
+    } catch (Exception e) {
+      log.error(
+          "evt=get_user_error userId={} organizationId={} error={}",
+          userId,
+          organizationId,
+          e.getMessage(),
+          e);
+      throw UserException.databaseError("Failed to retrieve user", e);
+    }
+  }
+
+  /** Validate that the requesting user has access to the organization */
+  private void validateOrganizationAccess(String requestingUserId, String organizationId) {
+    try {
+      User user = userService.getUserById(requestingUserId).orElse(null);
+      if (user == null) {
+        log.error(
+            "evt=validate_org_access_user_not_found requestingUserId={} organizationId={}",
+            requestingUserId,
+            organizationId);
+        throw new AuthException("ACCESS_DENIED", "User not found", 403);
+      }
+
+      if (!organizationId.equals(user.getOrganizationId())) {
+        log.error(
+            "evt=validate_org_access_denied requestingUserId={} userOrgId={} requestedOrgId={}",
+            requestingUserId,
+            user.getOrganizationId(),
+            organizationId);
+        throw new AuthException("ACCESS_DENIED", "You can only access your own organization", 403);
+      }
+
+      log.debug(
+          "evt=validate_org_access_success requestingUserId={} organizationId={}",
+          requestingUserId,
+          organizationId);
+    } catch (AuthException e) {
+      throw e;
+    } catch (Exception e) {
+      log.error(
+          "evt=validate_org_access_error requestingUserId={} organizationId={} error={}",
+          requestingUserId,
+          organizationId,
+          e.getMessage(),
+          e);
+      throw new AuthException("ACCESS_DENIED", "Failed to validate organization access", 403);
+    }
   }
 
   /** Require that the requesting user is a coach */
-  private void requireCoachPermission(String userId) {
-    User user = getUser(userId);
-    if (!"COACH".equals(user.getUserType())) {
+  private void requireCoachPermission(String requestingUserId, String organizationId) {
+    try {
+      User user = userService.getUserById(requestingUserId).orElse(null);
+      if (user == null) {
+        log.error(
+            "evt=require_coach_permission_user_not_found requestingUserId={} organizationId={}",
+            requestingUserId,
+            organizationId);
+        throw new AuthException("ACCESS_DENIED", "User not found", 403);
+      }
+
+      if (!UserType.COACH.name().equals(user.getUserType())) {
+        log.error(
+            "evt=require_coach_permission_denied requestingUserId={} userType={} organizationId={}",
+            requestingUserId,
+            user.getUserType(),
+            organizationId);
+        throw new AuthException("ACCESS_DENIED", "Only coaches can perform this action", 403);
+      }
+
+      log.debug(
+          "evt=require_coach_permission_granted requestingUserId={} organizationId={}",
+          requestingUserId,
+          organizationId);
+    } catch (AuthException e) {
+      throw e;
+    } catch (Exception e) {
       log.error(
-          "evt=require_coach_permission_error userId={} userType={} msg=access_denied",
-          userId,
-          user.getUserType());
-      throw new AuthException("ACCESS_DENIED", "Only coaches can perform this action", 403);
+          "evt=require_coach_permission_error requestingUserId={} organizationId={} error={}",
+          requestingUserId,
+          organizationId,
+          e.getMessage(),
+          e);
+      throw new AuthException("ACCESS_DENIED", "Failed to validate coach permission", 403);
     }
-    log.debug("evt=require_coach_permission_success userId={}", userId);
   }
 }

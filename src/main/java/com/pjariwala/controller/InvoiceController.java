@@ -25,7 +25,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/api/v1/invoices")
+@RequestMapping("/api/v1/organizations/{organizationId}/invoices")
 @CrossOrigin(origins = "*")
 @Slf4j
 @Tag(name = "Invoice Management", description = "APIs for managing invoices and payments")
@@ -42,16 +42,17 @@ public class InvoiceController {
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<InvoiceDTO> generateInvoice(
       @Parameter(hidden = true) @RequestAttribute("userId") String coachId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType,
+      @PathVariable String organizationId,
       @RequestBody InvoiceGenerateRequest request) {
 
     log.info(
-        "evt=invoice_generation_request coachId={} studentId={} batchId={}",
+        "evt=invoice_generation_request coachId={} studentId={} batchId={} organizationId={}",
         coachId,
         request.getStudentId(),
-        request.getBatchId());
+        request.getBatchId(),
+        organizationId);
 
-    InvoiceDTO invoice = invoiceService.generateInvoice(request, coachId, userType);
+    InvoiceDTO invoice = invoiceService.generateInvoice(request, coachId, organizationId);
 
     log.info(
         "evt=invoice_generated invoiceId={} studentId={}",
@@ -69,17 +70,18 @@ public class InvoiceController {
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<InvoiceDTO> recordPayment(
       @Parameter(hidden = true) @RequestAttribute("userId") String coachId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType,
+      @PathVariable String organizationId,
       @PathVariable String invoiceId,
       @RequestBody PaymentRecordRequest request) {
 
     log.info(
-        "evt=payment_record_request coachId={} invoiceId={} amount={}",
+        "evt=payment_record_request coachId={} invoiceId={} amount={} organizationId={}",
         coachId,
         invoiceId,
-        request.getAmountPaid());
+        request.getAmountPaid(),
+        organizationId);
 
-    InvoiceDTO invoice = invoiceService.recordPayment(invoiceId, request, coachId, userType);
+    InvoiceDTO invoice = invoiceService.recordPayment(invoiceId, request, coachId, organizationId);
 
     log.info("evt=payment_recorded invoiceId={} amount={}", invoiceId, request.getAmountPaid());
 
@@ -91,11 +93,14 @@ public class InvoiceController {
       summary = "Get invoice details by ID",
       description = "Retrieves the details of a specific invoice")
   @SecurityRequirement(name = "bearerAuth")
-  public ResponseEntity<InvoiceDTO> getInvoiceById(@PathVariable String invoiceId) {
+  public ResponseEntity<InvoiceDTO> getInvoiceById(
+      @Parameter(hidden = true) @RequestAttribute("userId") String userId,
+      @PathVariable String organizationId,
+      @PathVariable String invoiceId) {
 
-    log.info("evt=get_invoice_details invoiceId={}", invoiceId);
+    log.info("evt=get_invoice_details invoiceId={} organizationId={}", invoiceId, organizationId);
 
-    InvoiceDTO invoice = invoiceService.getInvoiceById(invoiceId);
+    InvoiceDTO invoice = invoiceService.getInvoiceById(invoiceId, userId, organizationId);
 
     if (invoice == null) {
       return ResponseEntity.notFound().build();
@@ -111,14 +116,21 @@ public class InvoiceController {
           "Allows students and coaches to view all invoices related to a specific student")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<PageResponseDTO<InvoiceDTO>> getInvoicesByStudent(
+      @Parameter(hidden = true) @RequestAttribute("userId") String userId,
+      @PathVariable String organizationId,
       @PathVariable String studentId,
       @RequestParam(defaultValue = "0") int page,
       @RequestParam(defaultValue = "10") int size) {
 
-    log.info("evt=get_student_invoices studentId={} page={} size={}", studentId, page, size);
+    log.info(
+        "evt=get_student_invoices studentId={} page={} size={} organizationId={}",
+        studentId,
+        page,
+        size,
+        organizationId);
 
     PageResponseDTO<InvoiceDTO> invoices =
-        invoiceService.getInvoicesByStudent(studentId, page, size);
+        invoiceService.getInvoicesByStudent(studentId, page, size, userId, organizationId);
 
     return ResponseEntity.ok(invoices);
   }
@@ -129,6 +141,8 @@ public class InvoiceController {
       description = "Retrieves a list of all invoices with optional filters for reporting purposes")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<PageResponseDTO<InvoiceDTO>> getAllInvoices(
+      @Parameter(hidden = true) @RequestAttribute("userId") String userId,
+      @PathVariable String organizationId,
       @RequestParam(required = false) String status,
       @RequestParam(required = false) String dueDateStart,
       @RequestParam(required = false) String dueDateEnd,
@@ -139,18 +153,27 @@ public class InvoiceController {
 
     log.info(
         "evt=get_all_invoices status={} dueDateStart={} dueDateEnd={} batchId={} studentId={}"
-            + " page={} size={}",
+            + " page={} size={} organizationId={}",
         status,
         dueDateStart,
         dueDateEnd,
         batchId,
         studentId,
         page,
-        size);
+        size,
+        organizationId);
 
     PageResponseDTO<InvoiceDTO> invoices =
         invoiceService.getAllInvoices(
-            status, dueDateStart, dueDateEnd, batchId, studentId, page, size);
+            status,
+            dueDateStart,
+            dueDateEnd,
+            batchId,
+            studentId,
+            page,
+            size,
+            userId,
+            organizationId);
 
     return ResponseEntity.ok(invoices);
   }
@@ -160,13 +183,18 @@ public class InvoiceController {
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<InvoiceDTO> updateInvoice(
       @Parameter(hidden = true) @RequestAttribute("userId") String coachId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType,
+      @PathVariable String organizationId,
       @PathVariable String invoiceId,
       @RequestBody InvoiceDTO invoiceDTO) {
 
-    log.info("evt=update_invoice_request coachId={} invoiceId={}", coachId, invoiceId);
+    log.info(
+        "evt=update_invoice_request coachId={} invoiceId={} organizationId={}",
+        coachId,
+        invoiceId,
+        organizationId);
 
-    InvoiceDTO invoice = invoiceService.updateInvoice(invoiceId, invoiceDTO, coachId, userType);
+    InvoiceDTO invoice =
+        invoiceService.updateInvoice(invoiceId, invoiceDTO, coachId, organizationId);
 
     log.info("evt=invoice_updated invoiceId={}", invoiceId);
 
@@ -178,12 +206,16 @@ public class InvoiceController {
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<Void> deleteInvoice(
       @Parameter(hidden = true) @RequestAttribute("userId") String coachId,
-      @Parameter(hidden = true) @RequestAttribute("userType") String userType,
+      @PathVariable String organizationId,
       @PathVariable String invoiceId) {
 
-    log.info("evt=delete_invoice_request coachId={} invoiceId={}", coachId, invoiceId);
+    log.info(
+        "evt=delete_invoice_request coachId={} invoiceId={} organizationId={}",
+        coachId,
+        invoiceId,
+        organizationId);
 
-    invoiceService.deleteInvoice(invoiceId, coachId, userType);
+    invoiceService.deleteInvoice(invoiceId, coachId, organizationId);
 
     log.info("evt=invoice_deleted invoiceId={}", invoiceId);
 
@@ -196,19 +228,23 @@ public class InvoiceController {
       description = "Calculate fees based on attendance and batch type")
   @SecurityRequirement(name = "bearerAuth")
   public ResponseEntity<Double> calculateFees(
+      @PathVariable String organizationId,
       @RequestParam String studentId,
       @RequestParam String batchId,
       @RequestParam String startDate,
       @RequestParam String endDate) {
 
     log.info(
-        "evt=calculate_fees_request studentId={} batchId={} startDate={} endDate={}",
+        "evt=calculate_fees_request studentId={} batchId={} startDate={} endDate={}"
+            + " organizationId={}",
         studentId,
         batchId,
         startDate,
-        endDate);
+        endDate,
+        organizationId);
 
-    Double fees = invoiceService.calculateFees(studentId, batchId, startDate, endDate);
+    Double fees =
+        invoiceService.calculateFees(studentId, batchId, startDate, endDate, organizationId);
 
     return ResponseEntity.ok(fees);
   }

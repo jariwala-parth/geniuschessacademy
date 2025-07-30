@@ -14,6 +14,7 @@ public class SignupRequest {
   private String name;
   private String phoneNumber;
   private String userType; // "COACH" or "STUDENT"
+  private String organizationId;
 
   // Student-specific fields
   private String guardianName;

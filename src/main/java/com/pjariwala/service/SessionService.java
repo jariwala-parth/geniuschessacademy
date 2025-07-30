@@ -10,29 +10,40 @@ import java.util.List;
 public interface SessionService {
 
   /** Create a new session */
-  SessionDTO createSession(SessionCreateRequest request, String requestingUserId);
+  SessionDTO createSession(
+      SessionCreateRequest request, String requestingUserId, String organizationId);
 
   /** Get session by ID */
-  SessionDTO getSessionById(String sessionId, String requestingUserId);
+  SessionDTO getSessionById(String sessionId, String requestingUserId, String organizationId);
 
   /** Get all sessions for a batch */
   PageResponseDTO<SessionDTO> getSessionsByBatch(
-      String batchId, int page, int size, String requestingUserId);
+      String batchId, int page, int size, String requestingUserId, String organizationId);
 
   /** Get sessions by date range */
   PageResponseDTO<SessionDTO> getSessionsByDateRange(
-      LocalDate startDate, LocalDate endDate, int page, int size, String requestingUserId);
+      LocalDate startDate,
+      LocalDate endDate,
+      int page,
+      int size,
+      String requestingUserId,
+      String organizationId);
 
   /** Update session */
-  SessionDTO updateSession(String sessionId, SessionUpdateRequest request, String requestingUserId);
+  SessionDTO updateSession(
+      String sessionId,
+      SessionUpdateRequest request,
+      String requestingUserId,
+      String organizationId);
 
   /** Delete session */
-  void deleteSession(String sessionId, String requestingUserId);
+  void deleteSession(String sessionId, String requestingUserId, String organizationId);
 
   /** Generate sessions for a batch (automated) */
   List<SessionDTO> generateSessionsForBatch(
-      String batchId, LocalDate startDate, LocalDate endDate, String requestingUserId);
-
-  /** Get sessions for today */
-  List<SessionDTO> getTodaysSessions(String requestingUserId);
+      String batchId,
+      LocalDate startDate,
+      LocalDate endDate,
+      String requestingUserId,
+      String organizationId);
 }
