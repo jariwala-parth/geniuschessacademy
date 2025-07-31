@@ -41,6 +41,8 @@ import com.pjariwala.model.User;
 import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.AuthService;
 import com.pjariwala.service.UserService;
+import com.pjariwala.util.AuthUtil;
+import com.pjariwala.util.JwtUtil;
 import jakarta.annotation.PostConstruct;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
@@ -78,6 +80,8 @@ public class AuthServiceImpl implements AuthService {
 
   @Autowired private UserService userService;
   @Autowired private ActivityLogService activityLogService;
+  @Autowired private AuthUtil authUtil;
+  @Autowired private JwtUtil jwtUtil;
 
   private AWSCognitoIdentityProvider cognitoClient;
 
@@ -318,7 +322,20 @@ public class AuthServiceImpl implements AuthService {
 
       log.info("Cognito authentication successful for user: {}", authRequest.getLogin());
 
-      // Build response with JWT tokens from Cognito
+      // Extract cognitoSub from ID token to get user info
+      String cognitoSub = authUtil.validateTokenAndGetCognitoSub(authenticationResult.getIdToken());
+
+      // Fetch user info from our database
+      User user =
+          userService
+              .getUserByCognitoSub(cognitoSub)
+              .orElseThrow(
+                  () -> {
+                    log.error("evt=login_user_not_found cognitoSub={}", cognitoSub);
+                    return AuthException.invalidCredentials();
+                  });
+
+      // Build response with JWT tokens from Cognito and user info
       AuthResponse response = new AuthResponse();
       response.setAccessToken(authenticationResult.getAccessToken());
       response.setRefreshToken(authenticationResult.getRefreshToken());
@@ -326,9 +343,13 @@ public class AuthServiceImpl implements AuthService {
       response.setTokenType(authenticationResult.getTokenType());
       response.setExpiresIn(authenticationResult.getExpiresIn());
 
-      // We DO NOT get userInfo here. The cognitoSub from the ID Token
-      // will be used in a separate API call to get all organizations and roles.
-      // This ensures proper multi-tenancy support.
+      // Include basic user info (without userType for multi-tenancy)
+      UserInfo userInfo = new UserInfo();
+      userInfo.setUserId(user.getUserId());
+      userInfo.setEmail(user.getEmail());
+      userInfo.setName(user.getName());
+      userInfo.setPhoneNumber(user.getPhoneNumber());
+      response.setUserInfo(userInfo);
 
       log.info("Login process completed successfully for user: {}", authRequest.getLogin());
       return LoginResult.forSuccess(response);
@@ -384,13 +405,34 @@ public class AuthServiceImpl implements AuthService {
 
       log.info("Authentication challenge completed successfully");
 
-      // Build response with JWT tokens from Cognito
+      // Extract cognitoSub from ID token to get user info
+      String cognitoSub = authUtil.validateTokenAndGetCognitoSub(authenticationResult.getIdToken());
+
+      // Fetch user info from our database
+      User user =
+          userService
+              .getUserByCognitoSub(cognitoSub)
+              .orElseThrow(
+                  () -> {
+                    log.error("evt=challenge_user_not_found cognitoSub={}", cognitoSub);
+                    return AuthException.invalidCredentials();
+                  });
+
+      // Build response with JWT tokens from Cognito and user info
       AuthResponse response = new AuthResponse();
       response.setAccessToken(authenticationResult.getAccessToken());
       response.setRefreshToken(authenticationResult.getRefreshToken());
       response.setIdToken(authenticationResult.getIdToken());
       response.setTokenType(authenticationResult.getTokenType());
       response.setExpiresIn(authenticationResult.getExpiresIn());
+
+      // Include basic user info (without userType for multi-tenancy)
+      UserInfo userInfo = new UserInfo();
+      userInfo.setUserId(user.getUserId());
+      userInfo.setEmail(user.getEmail());
+      userInfo.setName(user.getName());
+      userInfo.setPhoneNumber(user.getPhoneNumber());
+      response.setUserInfo(userInfo);
 
       return response;
 
@@ -404,7 +446,7 @@ public class AuthServiceImpl implements AuthService {
   }
 
   @Override
-  public AuthResponse refreshToken(String refreshToken) {
+  public AuthResponse refreshToken(String refreshToken, String username) {
     log.info("evt=refresh_token_start");
     try {
       if (refreshToken == null || refreshToken.trim().isEmpty()) {
@@ -414,96 +456,64 @@ public class AuthServiceImpl implements AuthService {
 
       log.info("evt=refresh_token_oauth2_start userPoolId={} clientId={}", userPoolId, clientId);
 
-      // For clients with secret, use AdminInitiateAuth to avoid SECRET_HASH requirement
-      // For clients without secret, use regular InitiateAuth
+      // Use InitiateAuth for refresh tokens (supports rotation better than AdminInitiateAuth)
       Map<String, String> authParameters = new HashMap<>();
       authParameters.put("REFRESH_TOKEN", refreshToken);
 
-      if (clientSecret != null && !clientSecret.trim().isEmpty()) {
-        log.info(
-            "evt=refresh_token_admin_auth client_has_secret=true userPoolId={} clientId={}",
-            userPoolId,
-            clientId);
-
-        // Use AdminInitiateAuth for clients with secret (doesn't require SECRET_HASH)
-        AdminInitiateAuthRequest adminRequest =
-            new AdminInitiateAuthRequest()
-                .withUserPoolId(userPoolId)
-                .withClientId(clientId)
-                .withAuthFlow(AuthFlowType.REFRESH_TOKEN_AUTH)
-                .withAuthParameters(authParameters);
-
-        AdminInitiateAuthResult adminResult = cognitoClient.adminInitiateAuth(adminRequest);
-        AuthenticationResultType authenticationResult = adminResult.getAuthenticationResult();
-
-        if (authenticationResult == null) {
-          log.error("evt=refresh_token_error msg=no_result_returned");
-          throw AuthException.invalidToken();
-        }
-
-        // Build response with new tokens
-        AuthResponse response = new AuthResponse();
-        response.setAccessToken(authenticationResult.getAccessToken());
-        response.setIdToken(authenticationResult.getIdToken());
-        response.setTokenType(authenticationResult.getTokenType());
-        response.setExpiresIn(authenticationResult.getExpiresIn());
-
-        // Set refresh token - it may or may not be rotated depending on Cognito config
-        if (authenticationResult.getRefreshToken() != null) {
-          response.setRefreshToken(authenticationResult.getRefreshToken());
-          log.info("evt=refresh_token_success msg=new_refresh_token_received");
-        } else {
-          response.setRefreshToken(refreshToken); // Keep the same refresh token
-          log.info("evt=refresh_token_success msg=refresh_token_not_rotated");
-        }
-
-        log.info(
-            "evt=refresh_token_success access_token_length={}",
-            response.getAccessToken() != null ? response.getAccessToken().length() : 0);
-        return response;
-
-      } else {
-        log.info(
-            "evt=refresh_token_initiate_auth client_has_secret=false userPoolId={} clientId={}",
-            userPoolId,
-            clientId);
-
-        // Use InitiateAuth for clients without secret
-        InitiateAuthRequest initiateAuthRequest =
-            new InitiateAuthRequest()
-                .withClientId(clientId)
-                .withAuthFlow(AuthFlowType.REFRESH_TOKEN_AUTH)
-                .withAuthParameters(authParameters);
-
-        InitiateAuthResult authResult = cognitoClient.initiateAuth(initiateAuthRequest);
-        AuthenticationResultType authenticationResult = authResult.getAuthenticationResult();
-
-        if (authenticationResult == null) {
-          log.error("evt=refresh_token_error msg=no_result_returned");
-          throw AuthException.invalidToken();
-        }
-
-        // Build response with new tokens
-        AuthResponse response = new AuthResponse();
-        response.setAccessToken(authenticationResult.getAccessToken());
-        response.setIdToken(authenticationResult.getIdToken());
-        response.setTokenType(authenticationResult.getTokenType());
-        response.setExpiresIn(authenticationResult.getExpiresIn());
-
-        // Set refresh token - it may or may not be rotated depending on Cognito config
-        if (authenticationResult.getRefreshToken() != null) {
-          response.setRefreshToken(authenticationResult.getRefreshToken());
-          log.info("evt=refresh_token_success msg=new_refresh_token_received");
-        } else {
-          response.setRefreshToken(refreshToken); // Keep the same refresh token
-          log.info("evt=refresh_token_success msg=refresh_token_not_rotated");
-        }
-
-        log.info(
-            "evt=refresh_token_success access_token_length={}",
-            response.getAccessToken() != null ? response.getAccessToken().length() : 0);
-        return response;
+      // Validate username parameter
+      if (username == null || username.trim().isEmpty()) {
+        log.error("evt=refresh_token_error msg=username_required_for_secret_hash");
+        throw AuthException.validationError("Username is required for SECRET_HASH calculation");
       }
+
+      // Add SECRET_HASH if client has secret
+      if (clientSecret != null && !clientSecret.trim().isEmpty()) {
+        authParameters.put("SECRET_HASH", calculateSecretHash(username));
+        authParameters.put("REFRESH_TOKEN", refreshToken);
+        log.debug("evt=refresh_token_secret_hash_added username={}", username);
+      }
+
+      log.info(
+          "evt=refresh_token_initiate_auth client_has_secret={} userPoolId={} clientId={}",
+          clientSecret != null && !clientSecret.trim().isEmpty(),
+          userPoolId,
+          clientId);
+
+      // Use InitiateAuth (works better with token rotation)
+      InitiateAuthRequest initiateAuthRequest =
+          new InitiateAuthRequest()
+              .withClientId(clientId)
+              .withAuthFlow(AuthFlowType.REFRESH_TOKEN_AUTH)
+              .withAuthParameters(authParameters);
+
+      InitiateAuthResult authResult = cognitoClient.initiateAuth(initiateAuthRequest);
+      AuthenticationResultType authenticationResult = authResult.getAuthenticationResult();
+
+      if (authenticationResult == null) {
+        log.error("evt=refresh_token_error msg=no_result_returned");
+        throw AuthException.invalidToken();
+      }
+
+      // Build response with new tokens
+      AuthResponse response = new AuthResponse();
+      response.setAccessToken(authenticationResult.getAccessToken());
+      response.setIdToken(authenticationResult.getIdToken());
+      response.setTokenType(authenticationResult.getTokenType());
+      response.setExpiresIn(authenticationResult.getExpiresIn());
+
+      // Set refresh token - it may or may not be rotated depending on Cognito config
+      if (authenticationResult.getRefreshToken() != null) {
+        response.setRefreshToken(authenticationResult.getRefreshToken());
+        log.info("evt=refresh_token_success msg=new_refresh_token_received");
+      } else {
+        response.setRefreshToken(refreshToken); // Keep the same refresh token
+        log.info("evt=refresh_token_success msg=refresh_token_not_rotated");
+      }
+
+      log.info(
+          "evt=refresh_token_success access_token_length={}",
+          response.getAccessToken() != null ? response.getAccessToken().length() : 0);
+      return response;
 
     } catch (AuthException e) {
       // Re-throw our custom auth exceptions - don't wrap them

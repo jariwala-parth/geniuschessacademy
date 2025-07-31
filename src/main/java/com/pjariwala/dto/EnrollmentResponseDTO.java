@@ -1,7 +1,8 @@
 package com.pjariwala.dto;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
-import com.pjariwala.model.Enrollment;
+import com.pjariwala.enums.EnrollmentStatus;
+import com.pjariwala.enums.PaymentStatus;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import lombok.AllArgsConstructor;
@@ -18,8 +19,8 @@ public class EnrollmentResponseDTO {
   @JsonFormat(pattern = "yyyy-MM-dd")
   private LocalDate enrollmentDate;
 
-  private Enrollment.EnrollmentStatus enrollmentStatus;
-  private Enrollment.PaymentStatus enrollmentPaymentStatus;
+  private EnrollmentStatus enrollmentStatus;
+  private PaymentStatus enrollmentPaymentStatus;
   private Double currentPaymentAmount;
   private String notes;
 

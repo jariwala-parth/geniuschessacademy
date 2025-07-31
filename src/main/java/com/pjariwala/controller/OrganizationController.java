@@ -5,7 +5,10 @@ import com.pjariwala.dto.OrganizationResponseDTO;
 import com.pjariwala.dto.PageResponseDTO;
 import com.pjariwala.dto.SignupRequest;
 import com.pjariwala.dto.UserInfo;
+import com.pjariwala.dto.UserOrganizationsResponse;
 import com.pjariwala.service.OrganizationService;
+import com.pjariwala.service.SuperAdminAuthorizationService;
+import com.pjariwala.service.UserService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -37,6 +40,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class OrganizationController {
 
   @Autowired private OrganizationService organizationService;
+  @Autowired private UserService userService;
+  @Autowired private SuperAdminAuthorizationService superAdminAuthService;
 
   @PostMapping
   @Operation(
@@ -53,6 +58,12 @@ public class OrganizationController {
         organizationRequest.getOrganizationName(),
         organizationRequest.getOwnerId(),
         userId);
+
+    // Log super admin action if applicable
+    superAdminAuthService.logSuperAdminAction(
+        userId,
+        "CREATE_ORGANIZATION",
+        "organizationName=" + organizationRequest.getOrganizationName());
 
     OrganizationResponseDTO response =
         organizationService.createOrganization(organizationRequest, userId);
@@ -216,5 +227,32 @@ public class OrganizationController {
         ownerId,
         response.getPageInfo().getTotalElements());
     return ResponseEntity.ok(response);
+  }
+
+  @GetMapping("/me")
+  @Operation(
+      summary = "Get user organizations and roles",
+      description =
+          "Retrieve all organizations where the authenticated user has access and their roles in"
+              + " each organization")
+  @SecurityRequirement(name = "bearerAuth")
+  public ResponseEntity<UserOrganizationsResponse> getUserOrganizations(
+      @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
+
+    log.info("evt=get_user_organizations_request userId={}", userId);
+
+    try {
+      UserOrganizationsResponse response = userService.getUserOrganizations(userId);
+
+      log.info(
+          "evt=get_user_organizations_success userId={} count={}",
+          userId,
+          response.getOrganizations().size());
+
+      return ResponseEntity.ok(response);
+    } catch (Exception e) {
+      log.error("evt=get_user_organizations_error userId={} error={}", userId, e.getMessage(), e);
+      throw e;
+    }
   }
 }

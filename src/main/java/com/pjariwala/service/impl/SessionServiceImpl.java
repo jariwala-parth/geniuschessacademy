@@ -5,6 +5,7 @@ import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBQueryExpression;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBScanExpression;
 import com.amazonaws.services.dynamodbv2.datamodeling.PaginatedQueryList;
 import com.amazonaws.services.dynamodbv2.model.AttributeValue;
+import com.pjariwala.constants.SystemConstants;
 import com.pjariwala.dto.PageResponseDTO;
 import com.pjariwala.dto.SessionCreateRequest;
 import com.pjariwala.dto.SessionDTO;
@@ -19,6 +20,7 @@ import com.pjariwala.model.User;
 import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.EnrollmentService;
 import com.pjariwala.service.SessionService;
+import com.pjariwala.service.SuperAdminAuthorizationService;
 import com.pjariwala.service.UserService;
 import com.pjariwala.util.ValidationUtil;
 import java.time.LocalDate;
@@ -27,6 +29,7 @@ import java.time.format.TextStyle;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.UUID;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -45,6 +48,7 @@ public class SessionServiceImpl implements SessionService {
   @Autowired private EnrollmentService enrollmentService;
 
   @Autowired private ValidationUtil validationUtil;
+  @Autowired private SuperAdminAuthorizationService superAdminAuthService;
 
   @Override
   public SessionDTO createSession(
@@ -57,7 +61,11 @@ public class SessionServiceImpl implements SessionService {
 
     // Validate organization access
     validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
 
     // Validate batch exists
     Batch batch = getBatch(request.getBatchId(), organizationId);
@@ -91,7 +99,7 @@ public class SessionServiceImpl implements SessionService {
       activityLogService.logAction(
           ActionType.CREATE_SESSION,
           requestingUserId,
-          getUser(requestingUserId).getName(),
+          getUserNameForLogging(requestingUserId, organizationId),
           UserType.COACH,
           String.format("Created session for batch: %s", batch.getBatchName()),
           EntityType.SESSION,
@@ -156,30 +164,37 @@ public class SessionServiceImpl implements SessionService {
         requestingUserId,
         organizationId);
 
-    // Validate organization access
-    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    // Check if super admin can access this organization
+    if (!superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+      // Validate organization access
+      validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
-    // Validate batch exists
-    Batch batch = getBatch(batchId, organizationId);
-    if (batch == null) {
-      throw UserException.validationError("Batch not found: " + batchId);
-    }
-
-    // Check permissions: coaches can see their own batches, students can see enrolled batches
-    User requestingUser = getUser(requestingUserId);
-    if (UserType.COACH.name().equals(requestingUser.getUserType())) {
-      // Coach can only see their own batches
-      if (!batch.getCoachId().equals(requestingUserId)) {
-        throw UserException.validationError(
-            "Access denied: You can only view sessions for your own batches");
+      // Validate batch exists
+      Batch batch = getBatch(batchId, organizationId);
+      if (batch == null) {
+        throw UserException.validationError("Batch not found: " + batchId);
       }
-    } else {
-      // Student can only see sessions for batches they're enrolled in
-      boolean isEnrolled =
-          enrollmentService.isStudentEnrolled(batchId, requestingUserId, organizationId);
-      if (!isEnrolled) {
-        throw UserException.validationError(
-            "Access denied: You can only view sessions for batches you're enrolled in");
+
+      // Check permissions: coaches can see their own batches, students can see enrolled batches
+      User requestingUser =
+          userService
+              .getUserByIdAndOrganizationId(requestingUserId, organizationId)
+              .orElseThrow(
+                  () -> UserException.validationError("User not found: " + requestingUserId));
+      if (UserType.COACH.name().equals(requestingUser.getUserType())) {
+        // Coach can only see their own batches
+        if (!batch.getCoachId().equals(requestingUserId)) {
+          throw UserException.validationError(
+              "Access denied: You can only view sessions for your own batches");
+        }
+      } else {
+        // Student can only see sessions for batches they're enrolled in
+        boolean isEnrolled =
+            enrollmentService.isStudentEnrolled(batchId, requestingUserId, organizationId);
+        if (!isEnrolled) {
+          throw UserException.validationError(
+              "Access denied: You can only view sessions for batches you're enrolled in");
+        }
       }
     }
 
@@ -238,8 +253,18 @@ public class SessionServiceImpl implements SessionService {
                 java.util.Map.of(":organizationId", new AttributeValue(organizationId)));
     List<Session> allSessions = dynamoDBMapper.scan(Session.class, scanExpression);
 
-    // Get user type for permission checking
-    User requestingUser = getUser(requestingUserId);
+    // Get user type for permission checking (optional for super admin)
+    final User finalRequestingUser;
+    if (!superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+      // Only get user from specific organization if not super admin
+      finalRequestingUser =
+          userService
+              .getUserByIdAndOrganizationId(requestingUserId, organizationId)
+              .orElseThrow(
+                  () -> UserException.validationError("User not found: " + requestingUserId));
+    } else {
+      finalRequestingUser = null;
+    }
 
     // Filter by date range and permissions
     List<Session> filteredSessions =
@@ -251,11 +276,20 @@ public class SessionServiceImpl implements SessionService {
                     return false;
                   }
 
+                  // Skip permission check for super admin
+                  if (superAdminAuthService.canAccessOrganization(
+                      requestingUserId, organizationId)) {
+                    return true;
+                  }
+
                   // Check permissions based on user type
                   Batch batch = getBatch(session.getBatchId(), organizationId);
                   if (batch == null) return false;
 
-                  if (UserType.COACH.name().equals(requestingUser.getUserType())) {
+                  // If finalRequestingUser is null (shouldn't happen here), return false
+                  if (finalRequestingUser == null) return false;
+
+                  if (UserType.COACH.name().equals(finalRequestingUser.getUserType())) {
                     // Coach can only see their own batches
                     return batch.getCoachId().equals(requestingUserId);
                   } else {
@@ -298,7 +332,11 @@ public class SessionServiceImpl implements SessionService {
 
     // Validate organization access
     validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
 
     // Get existing session
     DynamoDBScanExpression scanExpression =
@@ -342,7 +380,7 @@ public class SessionServiceImpl implements SessionService {
       activityLogService.logAction(
           ActionType.UPDATE_SESSION,
           requestingUserId,
-          getUser(requestingUserId).getName(),
+          getUserNameForLogging(requestingUserId, organizationId),
           UserType.COACH,
           String.format("Updated session: %s", sessionId),
           EntityType.SESSION,
@@ -366,7 +404,11 @@ public class SessionServiceImpl implements SessionService {
 
     // Validate organization access
     validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
 
     // Get existing session
     DynamoDBScanExpression scanExpression =
@@ -399,7 +441,7 @@ public class SessionServiceImpl implements SessionService {
       activityLogService.logAction(
           ActionType.DELETE_SESSION,
           requestingUserId,
-          getUser(requestingUserId).getName(),
+          getUserNameForLogging(requestingUserId, organizationId),
           UserType.COACH,
           String.format("Deleted session: %s", sessionId),
           EntityType.SESSION,
@@ -429,7 +471,11 @@ public class SessionServiceImpl implements SessionService {
 
     // Validate organization access
     validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
 
     // Validate batch exists and permissions
     Batch batch = getBatch(batchId, organizationId);
@@ -474,7 +520,7 @@ public class SessionServiceImpl implements SessionService {
       activityLogService.logAction(
           ActionType.BULK_OPERATION,
           requestingUserId,
-          getUser(requestingUserId).getName(),
+          getUserNameForLogging(requestingUserId, organizationId),
           UserType.COACH,
           String.format(
               "Generated %d sessions for batch: %s",
@@ -513,28 +559,29 @@ public class SessionServiceImpl implements SessionService {
     return dynamoDBMapper.load(Batch.class, organizationId, batchId);
   }
 
-  private com.pjariwala.model.User getUser(String userId) {
+  private String getUserNameForLogging(String userId, String organizationId) {
     try {
-      // Try both COACH and STUDENT types since we don't know which type the user is
-      User user = userService.getUserById(userId, UserType.COACH.name());
-      if (user == null) {
-        user = userService.getUserById(userId, UserType.STUDENT.name());
+      Optional<User> userOpt = userService.getUserByIdAndOrganizationId(userId, organizationId);
+      if (userOpt.isPresent()) {
+        return userOpt.get().getName();
+      } else if (superAdminAuthService.isGlobalSuperAdmin(userId)) {
+        return "Super Admin";
       }
-      if (user == null) {
-        log.error("evt=get_user_error userId={} msg=user_not_found", userId);
-        throw UserException.validationError("User not found: " + userId);
-      }
-      return user;
+      return "Unknown User";
     } catch (Exception e) {
-      log.error("evt=get_user_error userId={}", userId, e);
-      throw UserException.validationError("Failed to get user: " + userId);
+      log.warn("Failed to get user name for logging: userId={}", userId);
+      return "Unknown User";
     }
   }
 
   private void validateCoachPermissions(String batchCoachId, String requestingUserId) {
-    if (!batchCoachId.equals(requestingUserId)) {
-      throw UserException.validationError(
-          "Access denied: You can only manage sessions for your own batches");
+    // Skip validation if super admin has modification rights
+    if (!superAdminAuthService.canModifyOrganization(
+        requestingUserId, SystemConstants.SYSTEM_ORGANIZATION_ID)) {
+      if (!batchCoachId.equals(requestingUserId)) {
+        throw UserException.validationError(
+            "Access denied: You can only manage sessions for your own batches");
+      }
     }
   }
 }

@@ -4,6 +4,7 @@ import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBMapper;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBQueryExpression;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBScanExpression;
 import com.amazonaws.services.dynamodbv2.model.AttributeValue;
+import com.pjariwala.constants.SystemConstants;
 import com.pjariwala.dto.AttendanceDTO;
 import com.pjariwala.dto.BatchResponseDTO;
 import com.pjariwala.dto.InvoiceDTO;
@@ -25,6 +26,7 @@ import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.AttendanceService;
 import com.pjariwala.service.BatchService;
 import com.pjariwala.service.InvoiceService;
+import com.pjariwala.service.SuperAdminAuthorizationService;
 import com.pjariwala.service.UserService;
 import com.pjariwala.util.ValidationUtil;
 import java.time.LocalDate;
@@ -50,6 +52,7 @@ public class InvoiceServiceImpl implements InvoiceService {
   @Autowired private ActivityLogService activityLogService;
   @Autowired private UserService userService;
   @Autowired private ValidationUtil validationUtil;
+  @Autowired private SuperAdminAuthorizationService superAdminAuthService;
 
   @Override
   public InvoiceDTO generateInvoice(
@@ -64,8 +67,11 @@ public class InvoiceServiceImpl implements InvoiceService {
     // Validate organization access
     validationUtil.validateOrganizationAccess(coachId, organizationId);
 
-    // Validate that the requesting user is a coach
-    validationUtil.requireCoachPermission(coachId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(coachId, organizationId)) {
+      // Validate that the requesting user is a coach
+      validationUtil.requireCoachPermission(coachId, organizationId);
+    }
 
     // Get batch details
     Optional<BatchResponseDTO> batchResponse =
@@ -161,8 +167,11 @@ public class InvoiceServiceImpl implements InvoiceService {
     // Validate organization access
     validationUtil.validateOrganizationAccess(coachId, organizationId);
 
-    // Validate that the requesting user is a coach
-    validationUtil.requireCoachPermission(coachId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(coachId, organizationId)) {
+      // Validate that the requesting user is a coach
+      validationUtil.requireCoachPermission(coachId, organizationId);
+    }
 
     Invoice invoice = getInvoiceByIdInternal(invoiceId, organizationId);
     if (invoice == null) {
@@ -255,11 +264,14 @@ public class InvoiceServiceImpl implements InvoiceService {
         requestingUserId,
         organizationId);
 
-    // Validate organization access
-    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    // Check if super admin can access this organization
+    if (!superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+      // Validate organization access
+      validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
-    // Validate user access - students can only see their own invoices, coaches can see any
-    validationUtil.validateUserAccess(requestingUserId, studentId, organizationId);
+      // Validate user access - students can only see their own invoices, coaches can see any
+      validationUtil.validateUserAccess(requestingUserId, studentId, organizationId);
+    }
 
     // Create a query expression to find all invoices for the student
     Map<String, AttributeValue> eav = new HashMap<>();
@@ -325,11 +337,14 @@ public class InvoiceServiceImpl implements InvoiceService {
         requestingUserId,
         organizationId);
 
-    // Validate organization access
-    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    // Check if super admin can access this organization
+    if (!superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+      // Validate organization access
+      validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
-    // Only coaches can view all invoices
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+      // Only coaches can view all invoices
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
 
     // Create a scan expression with filters
     Map<String, AttributeValue> expressionAttributeValues = new HashMap<>();
@@ -416,8 +431,11 @@ public class InvoiceServiceImpl implements InvoiceService {
     // Validate organization access
     validationUtil.validateOrganizationAccess(coachId, organizationId);
 
-    // Validate that the requesting user is a coach
-    validationUtil.requireCoachPermission(coachId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(coachId, organizationId)) {
+      // Validate that the requesting user is a coach
+      validationUtil.requireCoachPermission(coachId, organizationId);
+    }
 
     Invoice invoice = getInvoiceByIdInternal(invoiceId, organizationId);
     if (invoice == null) {
@@ -475,8 +493,11 @@ public class InvoiceServiceImpl implements InvoiceService {
     // Validate organization access
     validationUtil.validateOrganizationAccess(coachId, organizationId);
 
-    // Validate that the requesting user is a coach
-    validationUtil.requireCoachPermission(coachId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(coachId, organizationId)) {
+      // Validate that the requesting user is a coach
+      validationUtil.requireCoachPermission(coachId, organizationId);
+    }
 
     Invoice invoice = getInvoiceByIdInternal(invoiceId, organizationId);
     if (invoice == null) {
@@ -528,7 +549,8 @@ public class InvoiceServiceImpl implements InvoiceService {
     try {
       // Get batch details
       Optional<BatchResponseDTO> batchResponse =
-          batchService.getBatchById(batchId, "system", organizationId);
+          batchService.getBatchById(
+              batchId, SystemConstants.SYSTEM_ORGANIZATION_ID, organizationId);
       if (batchResponse.isEmpty()) {
         throw UserException.userNotFound("Batch not found: " + batchId);
       }
@@ -539,7 +561,8 @@ public class InvoiceServiceImpl implements InvoiceService {
 
       // Get attendance for the period
       PageResponseDTO<AttendanceDTO> attendanceResponse =
-          attendanceService.getAttendanceByStudent(studentId, 0, 1000, "system", organizationId);
+          attendanceService.getAttendanceByStudent(
+              studentId, 0, 1000, SystemConstants.SYSTEM_ORGANIZATION_ID, organizationId);
 
       List<AttendanceDTO> attendances = attendanceResponse.getContent();
 
@@ -629,7 +652,8 @@ public class InvoiceServiceImpl implements InvoiceService {
     try {
       // Get attendance for the period
       PageResponseDTO<AttendanceDTO> attendanceResponse =
-          attendanceService.getAttendanceByStudent(studentId, 0, 1000, "system", organizationId);
+          attendanceService.getAttendanceByStudent(
+              studentId, 0, 1000, SystemConstants.SYSTEM_ORGANIZATION_ID, organizationId);
 
       List<AttendanceDTO> attendances = attendanceResponse.getContent();
 

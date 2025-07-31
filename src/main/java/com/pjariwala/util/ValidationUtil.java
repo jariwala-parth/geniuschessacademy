@@ -3,6 +3,7 @@ package com.pjariwala.util;
 import com.pjariwala.enums.UserType;
 import com.pjariwala.exception.AuthException;
 import com.pjariwala.model.User;
+import com.pjariwala.service.SuperAdminAuthorizationService;
 import com.pjariwala.service.UserService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,26 +14,29 @@ import org.springframework.stereotype.Component;
 public class ValidationUtil {
 
   @Autowired private UserService userService;
+  @Autowired private SuperAdminAuthorizationService superAdminAuthService;
 
   /** Validate that the requesting user has access to the organization */
   public void validateOrganizationAccess(String requestingUserId, String organizationId) {
     try {
-      User user = userService.getUserById(requestingUserId).orElse(null);
+      // Check if user is a global super admin first
+      if (superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+        log.debug(
+            "evt=validate_org_access_super_admin_granted requestingUserId={} organizationId={}",
+            requestingUserId,
+            organizationId);
+        return;
+      }
+
+      // For regular users, check if they exist in the specific organization
+      User user =
+          userService.getUserByIdAndOrganizationId(requestingUserId, organizationId).orElse(null);
       if (user == null) {
         log.error(
             "evt=validate_org_access_user_not_found requestingUserId={} organizationId={}",
             requestingUserId,
             organizationId);
         throw new AuthException("ACCESS_DENIED", "User not found", 403);
-      }
-
-      if (!organizationId.equals(user.getOrganizationId())) {
-        log.error(
-            "evt=validate_org_access_denied requestingUserId={} userOrgId={} requestedOrgId={}",
-            requestingUserId,
-            user.getOrganizationId(),
-            organizationId);
-        throw new AuthException("ACCESS_DENIED", "You can only access your own organization", 403);
       }
 
       log.debug(
@@ -56,7 +60,20 @@ public class ValidationUtil {
   public void validateUserAccess(
       String requestingUserId, String targetUserId, String organizationId) {
     try {
-      User requestingUser = userService.getUserById(requestingUserId).orElse(null);
+      // Check if user is a global super admin first
+      if (superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+        log.debug(
+            "evt=validate_user_access_super_admin_granted requestingUserId={} targetUserId={}"
+                + " organizationId={}",
+            requestingUserId,
+            targetUserId,
+            organizationId);
+        return;
+      }
+
+      // For regular users, check if they exist in the specific organization
+      User requestingUser =
+          userService.getUserByIdAndOrganizationId(requestingUserId, organizationId).orElse(null);
       if (requestingUser == null) {
         log.error(
             "evt=validate_user_access_requesting_user_not_found requestingUserId={} targetUserId={}"
@@ -113,7 +130,19 @@ public class ValidationUtil {
   /** Require that the requesting user is a coach */
   public void requireCoachPermission(String requestingUserId, String organizationId) {
     try {
-      User user = userService.getUserById(requestingUserId).orElse(null);
+      // Check if user is a global super admin first - they can perform coach actions
+      if (superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+        log.debug(
+            "evt=require_coach_permission_super_admin_granted requestingUserId={}"
+                + " organizationId={}",
+            requestingUserId,
+            organizationId);
+        return;
+      }
+
+      // For regular users, check if they are a coach in the specific organization
+      User user =
+          userService.getUserByIdAndOrganizationId(requestingUserId, organizationId).orElse(null);
       if (user == null) {
         log.error(
             "evt=require_coach_permission_user_not_found requestingUserId={} organizationId={}",
@@ -151,30 +180,20 @@ public class ValidationUtil {
   /** Require that the requesting user is a super admin */
   public void requireSuperAdminPermission(String requestingUserId, String organizationId) {
     try {
-      User user = userService.getUserById(requestingUserId).orElse(null);
-      if (user == null) {
-        log.error(
-            "evt=require_super_admin_permission_user_not_found requestingUserId={}"
-                + " organizationId={}",
+      // Check if user is a global super admin using the proper service
+      if (superAdminAuthService.isGlobalSuperAdmin(requestingUserId)) {
+        log.debug(
+            "evt=require_super_admin_permission_granted requestingUserId={} organizationId={}",
             requestingUserId,
             organizationId);
-        throw new AuthException("ACCESS_DENIED", "User not found", 403);
+        return;
       }
 
-      if (!UserType.SUPER_ADMIN.name().equals(user.getUserType())) {
-        log.error(
-            "evt=require_super_admin_permission_denied requestingUserId={} userType={}"
-                + " organizationId={}",
-            requestingUserId,
-            user.getUserType(),
-            organizationId);
-        throw new AuthException("ACCESS_DENIED", "Only super admins can perform this action", 403);
-      }
-
-      log.debug(
-          "evt=require_super_admin_permission_granted requestingUserId={} organizationId={}",
+      log.error(
+          "evt=require_super_admin_permission_denied requestingUserId={} organizationId={}",
           requestingUserId,
           organizationId);
+      throw new AuthException("ACCESS_DENIED", "Only super admins can perform this action", 403);
     } catch (AuthException e) {
       throw e;
     } catch (Exception e) {

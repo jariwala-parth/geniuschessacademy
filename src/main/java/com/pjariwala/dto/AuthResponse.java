@@ -13,4 +13,5 @@ public class AuthResponse {
   private String idToken;
   private String tokenType;
   private Integer expiresIn;
+  private UserInfo userInfo;
 }

@@ -28,7 +28,7 @@ public class ActivityLog {
   @DynamoDBHashKey(attributeName = "organizationId")
   private String organizationId;
 
-  @DynamoDBRangeKey(attributeName = "logId")
+  @DynamoDBRangeKey(attributeName = "activityId")
   private String logId;
 
   @DynamoDBAttribute(attributeName = "timestamp")
@@ -36,7 +36,7 @@ public class ActivityLog {
   private LocalDateTime timestamp;
 
   // GSI-1: Query by user ID and timestamp
-  @DynamoDBIndexHashKey(attributeName = "userId", globalSecondaryIndexName = "UserIdIndex")
+  @DynamoDBAttribute(attributeName = "userId")
   private String userId;
 
   // GSI-2: Query by action type and timestamp

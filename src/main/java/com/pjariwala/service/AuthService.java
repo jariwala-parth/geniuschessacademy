@@ -22,7 +22,7 @@ public interface AuthService {
   AuthResponse respondChallenge(AuthChallengeRequest challengeRequest);
 
   /** Refresh access token using refresh token */
-  AuthResponse refreshToken(String refreshToken);
+  AuthResponse refreshToken(String refreshToken, String username);
 
   /** Logout user by invalidating tokens */
   void logout(String userId, String accessToken);

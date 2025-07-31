@@ -15,6 +15,7 @@ import com.pjariwala.model.Attendance;
 import com.pjariwala.model.User;
 import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.AttendanceService;
+import com.pjariwala.service.SuperAdminAuthorizationService;
 import com.pjariwala.service.UserService;
 import java.time.LocalDateTime;
 import java.util.HashMap;
@@ -32,6 +33,7 @@ public class AttendanceServiceImpl implements AttendanceService {
   @Autowired private DynamoDBMapper dynamoDBMapper;
   @Autowired private ActivityLogService activityLogService;
   @Autowired private UserService userService;
+  @Autowired private SuperAdminAuthorizationService superAdminAuthService;
 
   @Override
   public AttendanceDTO markAttendance(
@@ -46,8 +48,11 @@ public class AttendanceServiceImpl implements AttendanceService {
     // Validate organization access
     validateOrganizationAccess(coachId, organizationId);
 
-    // Validate that the requesting user is a coach
-    requireCoachPermission(coachId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(coachId, organizationId)) {
+      // Validate that the requesting user is a coach
+      requireCoachPermission(coachId, organizationId);
+    }
 
     // Set the coach ID from the authenticated user
     request.setMarkedByCoachId(coachId);
@@ -268,8 +273,11 @@ public class AttendanceServiceImpl implements AttendanceService {
     // Validate organization access
     validateOrganizationAccess(coachId, organizationId);
 
-    // Validate that the requesting user is a coach
-    requireCoachPermission(coachId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(coachId, organizationId)) {
+      // Validate that the requesting user is a coach
+      requireCoachPermission(coachId, organizationId);
+    }
 
     Attendance attendance =
         getAttendanceByStudentAndSessionInternal(studentId, sessionId, organizationId);
@@ -318,8 +326,11 @@ public class AttendanceServiceImpl implements AttendanceService {
     // Validate organization access
     validateOrganizationAccess(coachId, organizationId);
 
-    // Validate that the requesting user is a coach
-    requireCoachPermission(coachId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(coachId, organizationId)) {
+      // Validate that the requesting user is a coach
+      requireCoachPermission(coachId, organizationId);
+    }
 
     Attendance attendance =
         getAttendanceByStudentAndSessionInternal(studentId, sessionId, organizationId);
@@ -386,104 +397,104 @@ public class AttendanceServiceImpl implements AttendanceService {
 
   /** Validate that the requesting user has access to the organization */
   private void validateOrganizationAccess(String requestingUserId, String organizationId) {
-    try {
-      User user = userService.getUserById(requestingUserId).orElse(null);
-      if (user == null) {
-        log.error(
-            "evt=validate_org_access_user_not_found requestingUserId={} organizationId={}",
+    // Check if super admin can access this organization
+    if (!superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+      try {
+        User user =
+            userService.getUserByIdAndOrganizationId(requestingUserId, organizationId).orElse(null);
+        if (user == null) {
+          log.error(
+              "evt=validate_org_access_user_not_found requestingUserId={} organizationId={}",
+              requestingUserId,
+              organizationId);
+          throw new AuthException("ACCESS_DENIED", "User not found", 403);
+        }
+
+        log.debug(
+            "evt=validate_org_access_success requestingUserId={} organizationId={}",
             requestingUserId,
             organizationId);
-        throw new AuthException("ACCESS_DENIED", "User not found", 403);
-      }
-
-      if (!organizationId.equals(user.getOrganizationId())) {
+      } catch (AuthException e) {
+        throw e;
+      } catch (Exception e) {
         log.error(
-            "evt=validate_org_access_denied requestingUserId={} userOrgId={} requestedOrgId={}",
+            "evt=validate_org_access_error requestingUserId={} organizationId={} error={}",
             requestingUserId,
-            user.getOrganizationId(),
-            organizationId);
-        throw new AuthException("ACCESS_DENIED", "You can only access your own organization", 403);
+            organizationId,
+            e.getMessage(),
+            e);
+        throw new AuthException("ACCESS_DENIED", "Failed to validate organization access", 403);
       }
-
-      log.debug(
-          "evt=validate_org_access_success requestingUserId={} organizationId={}",
-          requestingUserId,
-          organizationId);
-    } catch (AuthException e) {
-      throw e;
-    } catch (Exception e) {
-      log.error(
-          "evt=validate_org_access_error requestingUserId={} organizationId={} error={}",
-          requestingUserId,
-          organizationId,
-          e.getMessage(),
-          e);
-      throw new AuthException("ACCESS_DENIED", "Failed to validate organization access", 403);
     }
   }
 
   /** Validate that the requesting user can access the target user's data */
   private void validateUserAccess(
       String requestingUserId, String targetUserId, String organizationId) {
-    try {
-      User requestingUser = userService.getUserById(requestingUserId).orElse(null);
-      if (requestingUser == null) {
-        log.error(
-            "evt=validate_user_access_requesting_user_not_found requestingUserId={} targetUserId={}"
-                + " organizationId={}",
-            requestingUserId,
-            targetUserId,
-            organizationId);
-        throw new AuthException("ACCESS_DENIED", "Requesting user not found", 403);
-      }
+    // Skip validation if super admin has access
+    if (!superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+      try {
+        User requestingUser =
+            userService.getUserByIdAndOrganizationId(requestingUserId, organizationId).orElse(null);
+        if (requestingUser == null) {
+          log.error(
+              "evt=validate_user_access_requesting_user_not_found requestingUserId={}"
+                  + " targetUserId={} organizationId={}",
+              requestingUserId,
+              targetUserId,
+              organizationId);
+          throw new AuthException("ACCESS_DENIED", "Requesting user not found", 403);
+        }
 
-      // Coaches can access any user's data within their organization
-      if (UserType.COACH.name().equals(requestingUser.getUserType())) {
+        // Coaches can access any user's data within their organization
+        if (UserType.COACH.name().equals(requestingUser.getUserType())) {
+          log.debug(
+              "evt=validate_user_access_coach_granted requestingUserId={} targetUserId={}"
+                  + " organizationId={}",
+              requestingUserId,
+              targetUserId,
+              organizationId);
+          return;
+        }
+
+        // Students can only access their own data
+        if (!requestingUserId.equals(targetUserId)) {
+          log.error(
+              "evt=validate_user_access_student_denied requestingUserId={} targetUserId={}"
+                  + " organizationId={}",
+              requestingUserId,
+              targetUserId,
+              organizationId);
+          throw new AuthException("ACCESS_DENIED", "You can only access your own data", 403);
+        }
+
         log.debug(
-            "evt=validate_user_access_coach_granted requestingUserId={} targetUserId={}"
+            "evt=validate_user_access_student_own_data requestingUserId={} targetUserId={}"
                 + " organizationId={}",
             requestingUserId,
             targetUserId,
             organizationId);
-        return;
-      }
-
-      // Students can only access their own data
-      if (!requestingUserId.equals(targetUserId)) {
+      } catch (AuthException e) {
+        throw e;
+      } catch (Exception e) {
         log.error(
-            "evt=validate_user_access_student_denied requestingUserId={} targetUserId={}"
-                + " organizationId={}",
+            "evt=validate_user_access_error requestingUserId={} targetUserId={} organizationId={}"
+                + " error={}",
             requestingUserId,
             targetUserId,
-            organizationId);
-        throw new AuthException("ACCESS_DENIED", "You can only access your own data", 403);
+            organizationId,
+            e.getMessage(),
+            e);
+        throw new AuthException("ACCESS_DENIED", "Failed to validate user access", 403);
       }
-
-      log.debug(
-          "evt=validate_user_access_student_own_data requestingUserId={} targetUserId={}"
-              + " organizationId={}",
-          requestingUserId,
-          targetUserId,
-          organizationId);
-    } catch (AuthException e) {
-      throw e;
-    } catch (Exception e) {
-      log.error(
-          "evt=validate_user_access_error requestingUserId={} targetUserId={} organizationId={}"
-              + " error={}",
-          requestingUserId,
-          targetUserId,
-          organizationId,
-          e.getMessage(),
-          e);
-      throw new AuthException("ACCESS_DENIED", "Failed to validate user access", 403);
     }
   }
 
   /** Require that the requesting user is a coach */
   private void requireCoachPermission(String requestingUserId, String organizationId) {
     try {
-      User user = userService.getUserById(requestingUserId).orElse(null);
+      User user =
+          userService.getUserByIdAndOrganizationId(requestingUserId, organizationId).orElse(null);
       if (user == null) {
         log.error(
             "evt=require_coach_permission_user_not_found requestingUserId={} organizationId={}",

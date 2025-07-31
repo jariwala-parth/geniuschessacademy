@@ -53,6 +53,83 @@ public class JwtUtil {
     return getUserIdFromToken(token); // Delegate to existing method for now
   }
 
+  /** Extract username from JWT token */
+  public String getUsernameFromToken(String token) {
+    try {
+      String[] chunks = token.split("\\.");
+      if (chunks.length != 3) {
+        throw new RuntimeException("Invalid JWT token format");
+      }
+
+      Base64.Decoder decoder = Base64.getUrlDecoder();
+      String payload = new String(decoder.decode(chunks[1]));
+
+      JsonNode jsonNode = objectMapper.readTree(payload);
+
+      // Try cognito:username first, then username, then email as fallback
+      JsonNode cognitoUsernameNode = jsonNode.get("cognito:username");
+      if (cognitoUsernameNode != null && !cognitoUsernameNode.isNull()) {
+        return cognitoUsernameNode.asText();
+      }
+
+      JsonNode usernameNode = jsonNode.get("username");
+      if (usernameNode != null && !usernameNode.isNull()) {
+        return usernameNode.asText();
+      }
+
+      JsonNode emailNode = jsonNode.get("email");
+      if (emailNode != null && !emailNode.isNull()) {
+        return emailNode.asText();
+      }
+
+      throw new RuntimeException("No username field found in token");
+
+    } catch (Exception e) {
+      throw new RuntimeException("Error extracting username from token: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Extract username from refresh token (which is actually a JWT in Cognito) Refresh tokens contain
+   * basic user info including username
+   */
+  public String getUsernameFromRefreshToken(String refreshToken) {
+    try {
+      // Cognito refresh tokens are JWE (encrypted) but we can try to decode them
+      // If that fails, we'll extract from the access token or use a different approach
+
+      // First, try to decode as regular JWT (some Cognito configs store username in refresh token)
+      String[] chunks = refreshToken.split("\\.");
+      if (chunks.length >= 2) {
+        try {
+          Base64.Decoder decoder = Base64.getUrlDecoder();
+          String payload = new String(decoder.decode(chunks[1]));
+          JsonNode jsonNode = objectMapper.readTree(payload);
+
+          // Try to find username in refresh token payload
+          JsonNode usernameNode = jsonNode.get("username");
+          if (usernameNode != null && !usernameNode.isNull()) {
+            return usernameNode.asText();
+          }
+
+          JsonNode cognitoUsernameNode = jsonNode.get("cognito:username");
+          if (cognitoUsernameNode != null && !cognitoUsernameNode.isNull()) {
+            return cognitoUsernameNode.asText();
+          }
+        } catch (Exception ignored) {
+          // Refresh token might be encrypted, continue to next approach
+        }
+      }
+
+      throw new RuntimeException(
+          "Cannot extract username from refresh token - token may be encrypted");
+
+    } catch (Exception e) {
+      throw new RuntimeException(
+          "Error extracting username from refresh token: " + e.getMessage(), e);
+    }
+  }
+
   /** Extract email from JWT token */
   public String getEmailFromToken(String token) {
     try {

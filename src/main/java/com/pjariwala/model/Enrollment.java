@@ -7,6 +7,8 @@ import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBRangeKey;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBTable;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBTypeConverted;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBTypeConvertedEnum;
+import com.pjariwala.enums.EnrollmentStatus;
+import com.pjariwala.enums.PaymentStatus;
 import com.pjariwala.util.LocalDateConverter;
 import com.pjariwala.util.LocalDateTimeConverter;
 import java.time.LocalDate;
@@ -64,19 +66,4 @@ public class Enrollment {
   @DynamoDBAttribute(attributeName = "updatedAt")
   @DynamoDBTypeConverted(converter = LocalDateTimeConverter.class)
   private LocalDateTime updatedAt;
-
-  // --- Enums ---
-  public enum EnrollmentStatus {
-    ENROLLED,
-    DROPPED,
-    COMPLETED
-  }
-
-  public enum PaymentStatus {
-    PENDING,
-    PAID,
-    PARTIALLY_PAID,
-    OVERDUE,
-    REFUNDED
-  }
 }

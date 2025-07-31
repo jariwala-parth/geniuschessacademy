@@ -5,6 +5,7 @@ import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBQueryExpression;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBScanExpression;
 import com.amazonaws.services.dynamodbv2.datamodeling.PaginatedScanList;
 import com.amazonaws.services.dynamodbv2.model.AttributeValue;
+import com.pjariwala.constants.SystemConstants;
 import com.pjariwala.dto.OrganizationRequestDTO;
 import com.pjariwala.dto.OrganizationResponseDTO;
 import com.pjariwala.dto.PageResponseDTO;
@@ -20,6 +21,7 @@ import com.pjariwala.model.User;
 import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.AuthService;
 import com.pjariwala.service.OrganizationService;
+import com.pjariwala.service.SuperAdminAuthorizationService;
 import com.pjariwala.service.UserService;
 import com.pjariwala.util.ValidationUtil;
 import java.time.LocalDateTime;
@@ -43,6 +45,7 @@ public class OrganizationServiceImpl implements OrganizationService {
   @Autowired private UserService userService;
   @Autowired private AuthService authService;
   @Autowired private ValidationUtil validationUtil;
+  @Autowired private SuperAdminAuthorizationService superAdminAuthService;
 
   @Override
   public OrganizationResponseDTO createOrganization(
@@ -54,7 +57,8 @@ public class OrganizationServiceImpl implements OrganizationService {
         requestingUserId);
 
     // Authorization: Only SUPER_ADMIN users can create organizations
-    validationUtil.requireSuperAdminPermission(requestingUserId, "SYSTEM");
+    validationUtil.requireSuperAdminPermission(
+        requestingUserId, SystemConstants.SYSTEM_ORGANIZATION_ID);
 
     validateOrganizationRequest(request);
 
@@ -67,11 +71,19 @@ public class OrganizationServiceImpl implements OrganizationService {
             .contactEmail(request.getContactEmail())
             .contactPhone(request.getContactPhone())
             .address(request.getAddress())
-            .timezone(request.getTimezone() != null ? request.getTimezone() : "Asia/Kolkata")
+            .timezone(
+                request.getTimezone() != null
+                    ? request.getTimezone()
+                    : SystemConstants.DEFAULT_TIMEZONE)
             .isActive(true)
             .subscriptionPlan(
-                request.getSubscriptionPlan() != null ? request.getSubscriptionPlan() : "BASIC")
-            .maxUsers(request.getMaxUsers() != null ? request.getMaxUsers() : 100)
+                request.getSubscriptionPlan() != null
+                    ? request.getSubscriptionPlan()
+                    : SystemConstants.DEFAULT_SUBSCRIPTION_PLAN)
+            .maxUsers(
+                request.getMaxUsers() != null
+                    ? request.getMaxUsers()
+                    : SystemConstants.DEFAULT_MAX_USERS)
             .createdAt(LocalDateTime.now())
             .updatedAt(LocalDateTime.now())
             .build();
@@ -86,16 +98,23 @@ public class OrganizationServiceImpl implements OrganizationService {
       // Log organization creation activity
       try {
         User admin = getUser(requestingUserId);
+        String actionDescription = "Created organization: " + organization.getOrganizationName();
+
+        // Add super admin indicator if applicable
+        if (superAdminAuthService.isGlobalSuperAdmin(requestingUserId)) {
+          actionDescription = "SUPER_ADMIN " + actionDescription;
+        }
+
         activityLogService.logAction(
             ActionType.SYSTEM_ACTION,
             admin.getUserId(),
             admin.getName(),
             UserType.SUPER_ADMIN,
-            "Created organization: " + organization.getOrganizationName(),
+            actionDescription,
             EntityType.SYSTEM,
             organization.getOrganizationId(),
             organization.getOrganizationName(),
-            "SYSTEM");
+            SystemConstants.SYSTEM_ORGANIZATION_ID);
       } catch (Exception e) {
         log.warn(
             "Failed to log organization creation activity for organization: {} organizationName={}",
@@ -223,7 +242,7 @@ public class OrganizationServiceImpl implements OrganizationService {
             EntityType.SYSTEM,
             organizationId,
             existingOrganization.getOrganizationName(),
-            "SYSTEM");
+            SystemConstants.SYSTEM_ORGANIZATION_ID);
       } catch (Exception e) {
         log.warn(
             "Failed to log organization update activity for organization: {} organizationName={}",
@@ -288,7 +307,7 @@ public class OrganizationServiceImpl implements OrganizationService {
             EntityType.SYSTEM,
             organizationId,
             organization.getOrganizationName(),
-            "SYSTEM");
+            SystemConstants.SYSTEM_ORGANIZATION_ID);
       } catch (Exception e) {
         log.warn(
             "Failed to log organization deletion activity for organization: {} organizationName={}",
@@ -319,7 +338,8 @@ public class OrganizationServiceImpl implements OrganizationService {
         requestingUserId);
 
     // Authorization: Only SUPER_ADMIN users can view all organizations
-    validationUtil.requireSuperAdminPermission(requestingUserId, "SYSTEM");
+    validationUtil.requireSuperAdminPermission(
+        requestingUserId, SystemConstants.SYSTEM_ORGANIZATION_ID);
 
     try {
       DynamoDBScanExpression scanExpression = new DynamoDBScanExpression();
@@ -436,7 +456,8 @@ public class OrganizationServiceImpl implements OrganizationService {
         requestingUserId);
 
     // Authorization: Only SUPER_ADMIN can add coaches to organizations
-    validationUtil.requireSuperAdminPermission(requestingUserId, "SYSTEM");
+    validationUtil.requireSuperAdminPermission(
+        requestingUserId, SystemConstants.SYSTEM_ORGANIZATION_ID);
 
     // Validate organization exists
     if (!organizationExists(organizationId)) {
@@ -477,7 +498,7 @@ public class OrganizationServiceImpl implements OrganizationService {
             EntityType.USER,
             coachInfo.getUserId(),
             coachInfo.getName(),
-            "SYSTEM");
+            SystemConstants.SYSTEM_ORGANIZATION_ID);
       } catch (Exception e) {
         log.warn(
             "Failed to log coach addition activity for organization: {} coachEmail={}",

@@ -4,6 +4,7 @@ import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBMapper;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBQueryExpression;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBScanExpression;
 import com.amazonaws.services.dynamodbv2.model.AttributeValue;
+import com.pjariwala.constants.SystemConstants;
 import com.pjariwala.dto.BatchRequestDTO;
 import com.pjariwala.dto.BatchResponseDTO;
 import com.pjariwala.dto.PageResponseDTO;
@@ -19,6 +20,7 @@ import com.pjariwala.model.User;
 import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.BatchService;
 import com.pjariwala.service.EnrollmentService;
+import com.pjariwala.service.SuperAdminAuthorizationService;
 import com.pjariwala.service.UserService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -40,6 +42,7 @@ public class BatchServiceImpl implements BatchService {
   @Autowired private ActivityLogService activityLogService;
   @Autowired private UserService userService;
   @Autowired private EnrollmentService enrollmentService;
+  @Autowired private SuperAdminAuthorizationService superAdminAuthService;
 
   @Override
   public BatchResponseDTO createBatch(
@@ -54,8 +57,11 @@ public class BatchServiceImpl implements BatchService {
     // Validate organization access
     validateOrganizationAccess(requestingUserId, organizationId);
 
-    // Authorization: Only coaches can create batches
-    requireCoachPermission(requestingUserId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      // Authorization: Only coaches can create batches
+      requireCoachPermission(requestingUserId, organizationId);
+    }
 
     validateBatchRequest(batchRequest);
 
@@ -80,7 +86,9 @@ public class BatchServiceImpl implements BatchService {
             .notes(batchRequest.getNotes())
             .coachId(batchRequest.getCoachId())
             .timezone(
-                batchRequest.getTimezone() != null ? batchRequest.getTimezone() : "Asia/Kolkata")
+                batchRequest.getTimezone() != null
+                    ? batchRequest.getTimezone()
+                    : SystemConstants.DEFAULT_TIMEZONE)
             .createdAt(LocalDateTime.now())
             .updatedAt(LocalDateTime.now())
             .build();
@@ -510,13 +518,9 @@ public class BatchServiceImpl implements BatchService {
 
   private void validateCoachExists(String coachId, String organizationId) {
     try {
-      User coach = userService.getUserById(coachId).orElse(null);
+      User coach = userService.getUserByIdAndOrganizationId(coachId, organizationId).orElse(null);
       if (coach == null) {
         throw UserException.validationError("Coach not found");
-      }
-
-      if (!organizationId.equals(coach.getOrganizationId())) {
-        throw UserException.validationError("Coach does not belong to this organization");
       }
 
       if (!UserType.COACH.name().equals(coach.getUserType())) {
@@ -693,13 +697,9 @@ public class BatchServiceImpl implements BatchService {
 
   private User getUser(String userId, String organizationId) {
     try {
-      User user = userService.getUserById(userId).orElse(null);
+      User user = userService.getUserByIdAndOrganizationId(userId, organizationId).orElse(null);
       if (user == null) {
         throw UserException.validationError("User not found: " + userId);
-      }
-
-      if (!organizationId.equals(user.getOrganizationId())) {
-        throw UserException.validationError("User does not belong to this organization");
       }
 
       return user;
@@ -718,46 +718,42 @@ public class BatchServiceImpl implements BatchService {
 
   /** Validate that the requesting user has access to the organization */
   private void validateOrganizationAccess(String requestingUserId, String organizationId) {
-    try {
-      User user = userService.getUserById(requestingUserId).orElse(null);
-      if (user == null) {
-        log.error(
-            "evt=validate_org_access_user_not_found requestingUserId={} organizationId={}",
+    // Check if super admin can access this organization
+    if (!superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+      try {
+        User user =
+            userService.getUserByIdAndOrganizationId(requestingUserId, organizationId).orElse(null);
+        if (user == null) {
+          log.error(
+              "evt=validate_org_access_user_not_found requestingUserId={} organizationId={}",
+              requestingUserId,
+              organizationId);
+          throw new AuthException("ACCESS_DENIED", "User not found", 403);
+        }
+
+        log.debug(
+            "evt=validate_org_access_success requestingUserId={} organizationId={}",
             requestingUserId,
             organizationId);
-        throw new AuthException("ACCESS_DENIED", "User not found", 403);
-      }
-
-      if (!organizationId.equals(user.getOrganizationId())) {
+      } catch (AuthException e) {
+        throw e;
+      } catch (Exception e) {
         log.error(
-            "evt=validate_org_access_denied requestingUserId={} userOrgId={} requestedOrgId={}",
+            "evt=validate_org_access_error requestingUserId={} organizationId={} error={}",
             requestingUserId,
-            user.getOrganizationId(),
-            organizationId);
-        throw new AuthException("ACCESS_DENIED", "You can only access your own organization", 403);
+            organizationId,
+            e.getMessage(),
+            e);
+        throw new AuthException("ACCESS_DENIED", "Failed to validate organization access", 403);
       }
-
-      log.debug(
-          "evt=validate_org_access_success requestingUserId={} organizationId={}",
-          requestingUserId,
-          organizationId);
-    } catch (AuthException e) {
-      throw e;
-    } catch (Exception e) {
-      log.error(
-          "evt=validate_org_access_error requestingUserId={} organizationId={} error={}",
-          requestingUserId,
-          organizationId,
-          e.getMessage(),
-          e);
-      throw new AuthException("ACCESS_DENIED", "Failed to validate organization access", 403);
     }
   }
 
   /** Require that the requesting user is a coach */
   private void requireCoachPermission(String requestingUserId, String organizationId) {
     try {
-      User user = userService.getUserById(requestingUserId).orElse(null);
+      User user =
+          userService.getUserByIdAndOrganizationId(requestingUserId, organizationId).orElse(null);
       if (user == null) {
         log.error(
             "evt=require_coach_permission_user_not_found requestingUserId={} organizationId={}",

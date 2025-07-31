@@ -14,6 +14,7 @@ import com.pjariwala.enums.EntityType;
 import com.pjariwala.enums.UserType;
 import com.pjariwala.model.ActivityLog;
 import com.pjariwala.service.ActivityLogService;
+import com.pjariwala.service.SuperAdminAuthorizationService;
 import com.pjariwala.util.ValidationUtil;
 import java.time.LocalDateTime;
 import java.util.HashMap;
@@ -31,6 +32,7 @@ public class ActivityLogServiceImpl implements ActivityLogService {
 
   @Autowired private DynamoDBMapper dynamoDBMapper;
   @Autowired private ValidationUtil validationUtil;
+  @Autowired private SuperAdminAuthorizationService superAdminAuthService;
 
   @Override
   public void logAction(
@@ -168,10 +170,12 @@ public class ActivityLogServiceImpl implements ActivityLogService {
 
       DynamoDBQueryExpression<ActivityLog> queryExpression =
           new DynamoDBQueryExpression<ActivityLog>()
+              .withIndexName("userId-index")
               .withKeyConditionExpression("organizationId = :organizationId AND userId = :userId")
               .withExpressionAttributeValues(eav)
-              .withScanIndexForward(false) // Sort descending by timestamp
-              .withLimit(limit);
+              .withScanIndexForward(false)
+              .withLimit(limit)
+              .withConsistentRead(false);
 
       PaginatedQueryList<ActivityLog> results =
           dynamoDBMapper.query(ActivityLog.class, queryExpression);
@@ -192,7 +196,7 @@ public class ActivityLogServiceImpl implements ActivityLogService {
           organizationId,
           e.getMessage(),
           e);
-      return List.of();
+      throw e; // Re-throw the exception so controller can return proper error status
     }
   }
 
@@ -209,8 +213,11 @@ public class ActivityLogServiceImpl implements ActivityLogService {
     // Validate organization access
     validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
-    // Only coaches can view all activities
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      // Only coaches can view all activities
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
     try {
       Map<String, AttributeValue> eav = new HashMap<>();
       eav.put(":organizationId", new AttributeValue().withS(organizationId));
@@ -219,7 +226,8 @@ public class ActivityLogServiceImpl implements ActivityLogService {
           new DynamoDBQueryExpression<ActivityLog>()
               .withKeyConditionExpression("organizationId = :organizationId")
               .withExpressionAttributeValues(eav)
-              .withScanIndexForward(false); // Sort descending by timestamp
+              .withScanIndexForward(false) // Sort descending by timestamp
+              .withConsistentRead(false); // GSIs don't support consistent reads
 
       PaginatedQueryList<ActivityLog> results =
           dynamoDBMapper.query(ActivityLog.class, queryExpression);
@@ -279,8 +287,11 @@ public class ActivityLogServiceImpl implements ActivityLogService {
     // Validate organization access
     validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
-    // Only coaches can view activities by action type
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      // Only coaches can view activities by action type
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
 
     try {
       Map<String, AttributeValue> eav = new HashMap<>();
@@ -320,7 +331,7 @@ public class ActivityLogServiceImpl implements ActivityLogService {
           organizationId,
           e.getMessage(),
           e);
-      return List.of();
+      throw e; // Re-throw the exception so controller can return proper error status
     }
   }
 
@@ -342,8 +353,11 @@ public class ActivityLogServiceImpl implements ActivityLogService {
     // Validate organization access
     validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
-    // Only coaches can view activities by entity
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      // Only coaches can view activities by entity
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
 
     try {
       Map<String, AttributeValue> eav = new HashMap<>();
@@ -388,7 +402,7 @@ public class ActivityLogServiceImpl implements ActivityLogService {
           organizationId,
           e.getMessage(),
           e);
-      return List.of();
+      throw e; // Re-throw the exception so controller can return proper error status
     }
   }
 
@@ -411,8 +425,11 @@ public class ActivityLogServiceImpl implements ActivityLogService {
     // Validate organization access
     validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
-    // Only coaches can view activities by date range
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      // Only coaches can view activities by date range
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
 
     // This would require additional GSI or complex filtering
     // For now, return recent activities within the date range using scan

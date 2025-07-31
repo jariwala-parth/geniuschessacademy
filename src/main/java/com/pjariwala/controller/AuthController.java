@@ -114,7 +114,9 @@ public class AuthController {
                     .substring(0, Math.min(20, refreshTokenRequest.getRefreshToken().length()))
                 + "..."
             : "null");
-    AuthResponse response = authService.refreshToken(refreshTokenRequest.getRefreshToken());
+    AuthResponse response =
+        authService.refreshToken(
+            refreshTokenRequest.getRefreshToken(), refreshTokenRequest.getUsername());
     log.info("evt=refresh_token_success");
     return ResponseEntity.ok(response);
   }

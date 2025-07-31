@@ -28,6 +28,9 @@ public interface UserService {
   /** Get user by Cognito sub */
   Optional<User> getUserByCognitoSub(String cognitoSub);
 
+  /** Get user by ID and organization ID (for organization-scoped operations) */
+  Optional<User> getUserByIdAndOrganizationId(String userId, String organizationId);
+
   List<User> getUsersByType(String userType, String organizationId);
 
   /**

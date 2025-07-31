@@ -5,6 +5,7 @@ import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBQueryExpression;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBScanExpression;
 import com.amazonaws.services.dynamodbv2.datamodeling.PaginatedScanList;
 import com.amazonaws.services.dynamodbv2.model.AttributeValue;
+import com.pjariwala.constants.SystemConstants;
 import com.pjariwala.dto.PageResponseDTO;
 import com.pjariwala.dto.UserInfo;
 import com.pjariwala.dto.UserOrganizationInfo;
@@ -203,6 +204,41 @@ public class UserServiceImpl implements UserService {
   }
 
   @Override
+  public Optional<User> getUserByIdAndOrganizationId(String userId, String organizationId) {
+    try {
+      log.info(
+          "evt=get_user_by_id_and_org_start userId={} organizationId={}", userId, organizationId);
+
+      // Use the primary key directly since we have both organizationId and userId
+      User user = dynamoDBMapper.load(User.class, organizationId, userId);
+
+      if (user != null) {
+        log.info(
+            "evt=get_user_by_id_and_org_found userId={} organizationId={} name={} userType={}",
+            user.getUserId(),
+            user.getOrganizationId(),
+            user.getName(),
+            user.getUserType());
+        return Optional.of(user);
+      } else {
+        log.info(
+            "evt=get_user_by_id_and_org_not_found userId={} organizationId={}",
+            userId,
+            organizationId);
+        return Optional.empty();
+      }
+    } catch (Exception e) {
+      log.error(
+          "evt=get_user_by_id_and_org_error userId={} organizationId={} error={}",
+          userId,
+          organizationId,
+          e.getMessage(),
+          e);
+      return Optional.empty();
+    }
+  }
+
+  @Override
   public List<User> getUsersByType(String userType, String organizationId) {
     try {
       Map<String, AttributeValue> expressionAttributeValues = new HashMap<>();
@@ -377,7 +413,7 @@ public class UserServiceImpl implements UserService {
     try {
       List<UserOrganizationInfo> organizations = new ArrayList<>();
 
-      // Get user by ID to find their organizations
+      // First, get the user to extract cognitoSub
       Optional<User> userOpt = getUserById(userId);
       if (userOpt.isEmpty()) {
         log.error("evt=get_user_organizations_user_not_found userId={}", userId);
@@ -385,12 +421,39 @@ public class UserServiceImpl implements UserService {
       }
 
       User user = userOpt.get();
+      String cognitoSub = user.getCognitoSub();
 
-      // If user is a SUPER_ADMIN, they can access all organizations
-      if ("SUPER_ADMIN".equals(user.getUserType())) {
-        // Get all organizations
-        DynamoDBScanExpression scanExpression = new DynamoDBScanExpression();
-        List<Organization> allOrgs = dynamoDBMapper.scan(Organization.class, scanExpression);
+      if (cognitoSub == null) {
+        log.error("evt=get_user_organizations_no_cognito_sub userId={}", userId);
+        throw UserException.validationError("User has no cognitoSub");
+      }
+
+      // Check if user is SUPER_ADMIN by looking for system organization entry
+      Map<String, AttributeValue> superAdminEav = new HashMap<>();
+      superAdminEav.put(":cognitoSub", new AttributeValue().withS(cognitoSub));
+      superAdminEav.put(
+          ":systemOrgId", new AttributeValue().withS(SystemConstants.SYSTEM_ORGANIZATION_ID));
+      superAdminEav.put(":superAdminType", new AttributeValue().withS("SUPER_ADMIN"));
+
+      DynamoDBScanExpression superAdminScanExpression =
+          new DynamoDBScanExpression()
+              .withFilterExpression(
+                  "cognitoSub = :cognitoSub AND organizationId = :systemOrgId AND userType ="
+                      + " :superAdminType")
+              .withExpressionAttributeValues(superAdminEav);
+
+      List<User> superAdminRecords = dynamoDBMapper.scan(User.class, superAdminScanExpression);
+      boolean isSuperAdmin = !superAdminRecords.isEmpty();
+
+      log.info(
+          "evt=get_user_organizations_super_admin_check cognitoSub={} isSuperAdmin={}",
+          cognitoSub,
+          isSuperAdmin);
+
+      if (isSuperAdmin) {
+        // SUPER_ADMIN can access all organizations
+        DynamoDBScanExpression orgScanExpression = new DynamoDBScanExpression();
+        List<Organization> allOrgs = dynamoDBMapper.scan(Organization.class, orgScanExpression);
 
         for (Organization org : allOrgs) {
           if (org.getIsActive() != null && org.getIsActive()) {
@@ -403,45 +466,82 @@ public class UserServiceImpl implements UserService {
           }
         }
       } else {
-        // For regular users, check if they own any organizations
+        // Regular users - get their specific organizations
         Map<String, AttributeValue> eav = new HashMap<>();
-        eav.put(":ownerId", new AttributeValue().withS(userId));
+        eav.put(":cognitoSub", new AttributeValue().withS(cognitoSub));
 
-        DynamoDBQueryExpression<Organization> queryExpression =
+        DynamoDBScanExpression scanExpression =
+            new DynamoDBScanExpression()
+                .withFilterExpression("cognitoSub = :cognitoSub")
+                .withExpressionAttributeValues(eav);
+
+        List<User> allUserRecords = dynamoDBMapper.scan(User.class, scanExpression);
+        log.info(
+            "evt=get_user_organizations_found_records cognitoSub={} count={}",
+            cognitoSub,
+            allUserRecords.size());
+
+        // Process each user record for regular users
+        for (User userRecord : allUserRecords) {
+          String userType = userRecord.getUserType();
+          String orgId = userRecord.getOrganizationId();
+
+          log.info(
+              "evt=get_user_organizations_processing userId={} userType={} organizationId={}",
+              userRecord.getUserId(),
+              userType,
+              orgId);
+
+          if ("COACH".equals(userType) || "STUDENT".equals(userType)) {
+            // Regular users get their specific organization
+            if (orgId != null && !SystemConstants.SYSTEM_ORGANIZATION_ID.equals(orgId)) {
+              Organization userOrg = dynamoDBMapper.load(Organization.class, orgId);
+              if (userOrg != null && userOrg.getIsActive() != null && userOrg.getIsActive()) {
+                // Check if this organization is not already added
+                boolean alreadyAdded =
+                    organizations.stream().anyMatch(org -> org.getOrganizationId().equals(orgId));
+
+                if (!alreadyAdded) {
+                  UserOrganizationInfo orgInfo = new UserOrganizationInfo();
+                  orgInfo.setOrganizationId(orgId);
+                  orgInfo.setOrganizationName(userOrg.getOrganizationName());
+                  orgInfo.setUserRole(userType); // COACH or STUDENT
+                  orgInfo.setIsActive(userOrg.getIsActive());
+                  organizations.add(orgInfo);
+                }
+              }
+            }
+          }
+        }
+
+        // If user owns any organizations, add them too
+        Map<String, AttributeValue> ownerEav = new HashMap<>();
+        ownerEav.put(":ownerId", new AttributeValue().withS(userId));
+
+        DynamoDBQueryExpression<Organization> ownerQueryExpression =
             new DynamoDBQueryExpression<Organization>()
                 .withIndexName("ownerId-index")
                 .withConsistentRead(false)
                 .withKeyConditionExpression("ownerId = :ownerId")
-                .withExpressionAttributeValues(eav);
+                .withExpressionAttributeValues(ownerEav);
 
-        List<Organization> ownedOrgs = dynamoDBMapper.query(Organization.class, queryExpression);
+        List<Organization> ownedOrgs =
+            dynamoDBMapper.query(Organization.class, ownerQueryExpression);
 
         for (Organization org : ownedOrgs) {
           if (org.getIsActive() != null && org.getIsActive()) {
-            UserOrganizationInfo orgInfo = new UserOrganizationInfo();
-            orgInfo.setOrganizationId(org.getOrganizationId());
-            orgInfo.setOrganizationName(org.getOrganizationName());
-            orgInfo.setUserRole("OWNER");
-            orgInfo.setIsActive(org.getIsActive());
-            organizations.add(orgInfo);
-          }
-        }
-
-        // Also add the organization where the user is a member (COACH or STUDENT)
-        if (user.getOrganizationId() != null) {
-          Organization userOrg = dynamoDBMapper.load(Organization.class, user.getOrganizationId());
-          if (userOrg != null && userOrg.getIsActive() != null && userOrg.getIsActive()) {
-            // Check if this organization is not already added as owned
+            // Check if this organization is not already added
             boolean alreadyAdded =
                 organizations.stream()
-                    .anyMatch(org -> org.getOrganizationId().equals(user.getOrganizationId()));
+                    .anyMatch(
+                        orgInfo -> orgInfo.getOrganizationId().equals(org.getOrganizationId()));
 
             if (!alreadyAdded) {
               UserOrganizationInfo orgInfo = new UserOrganizationInfo();
-              orgInfo.setOrganizationId(user.getOrganizationId());
-              orgInfo.setOrganizationName(userOrg.getOrganizationName());
-              orgInfo.setUserRole(user.getUserType()); // COACH or STUDENT
-              orgInfo.setIsActive(userOrg.getIsActive());
+              orgInfo.setOrganizationId(org.getOrganizationId());
+              orgInfo.setOrganizationName(org.getOrganizationName());
+              orgInfo.setUserRole("OWNER");
+              orgInfo.setIsActive(org.getIsActive());
               organizations.add(orgInfo);
             }
           }
@@ -449,8 +549,12 @@ public class UserServiceImpl implements UserService {
       }
 
       log.info(
-          "evt=get_user_organizations_success userId={} count={}", userId, organizations.size());
-      return new UserOrganizationsResponse(organizations);
+          "evt=get_user_organizations_success userId={} cognitoSub={} isSuperAdmin={} count={}",
+          userId,
+          cognitoSub,
+          isSuperAdmin,
+          organizations.size());
+      return new UserOrganizationsResponse(organizations, isSuperAdmin);
 
     } catch (UserException e) {
       throw e;

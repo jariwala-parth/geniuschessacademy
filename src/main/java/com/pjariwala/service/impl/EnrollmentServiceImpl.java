@@ -1,7 +1,9 @@
 package com.pjariwala.service.impl;
 
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBMapper;
+import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBQueryExpression;
 import com.amazonaws.services.dynamodbv2.datamodeling.DynamoDBScanExpression;
+import com.amazonaws.services.dynamodbv2.datamodeling.PaginatedQueryList;
 import com.amazonaws.services.dynamodbv2.datamodeling.PaginatedScanList;
 import com.amazonaws.services.dynamodbv2.model.AttributeValue;
 import com.pjariwala.dto.EnrollmentRequestDTO;
@@ -9,6 +11,7 @@ import com.pjariwala.dto.EnrollmentResponseDTO;
 import com.pjariwala.dto.PageResponseDTO;
 import com.pjariwala.enums.ActionType;
 import com.pjariwala.enums.BatchStatus;
+import com.pjariwala.enums.EnrollmentStatus;
 import com.pjariwala.enums.EntityType;
 import com.pjariwala.enums.UserType;
 import com.pjariwala.exception.AuthException;
@@ -18,6 +21,7 @@ import com.pjariwala.model.Enrollment;
 import com.pjariwala.model.User;
 import com.pjariwala.service.ActivityLogService;
 import com.pjariwala.service.EnrollmentService;
+import com.pjariwala.service.SuperAdminAuthorizationService;
 import com.pjariwala.service.UserService;
 import com.pjariwala.util.ValidationUtil;
 import java.time.LocalDateTime;
@@ -39,6 +43,7 @@ public class EnrollmentServiceImpl implements EnrollmentService {
   @Autowired private UserService userService;
   @Autowired private ActivityLogService activityLogService;
   @Autowired private ValidationUtil validationUtil;
+  @Autowired private SuperAdminAuthorizationService superAdminAuthService;
 
   @Override
   public EnrollmentResponseDTO createEnrollment(
@@ -53,8 +58,11 @@ public class EnrollmentServiceImpl implements EnrollmentService {
     // Validate organization access
     validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
-    // Authorization: Only coaches can enroll students
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      // Authorization: Only coaches can enroll students
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
 
     validateEnrollmentRequest(enrollmentRequest);
 
@@ -101,9 +109,23 @@ public class EnrollmentServiceImpl implements EnrollmentService {
 
       // Log enrollment activity
       try {
-        User coach = getUser(requestingUserId, organizationId);
+        User coach = null;
         User student = getUser(enrollmentRequest.getStudentId(), organizationId);
         Batch batch = getBatch(enrollmentRequest.getBatchId(), organizationId);
+
+        // For superadmin, get user without organization constraint, otherwise get the coach user
+        if (superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+          coach = userService.getUserById(requestingUserId).orElse(null);
+          if (coach == null) {
+            log.warn("evt=create_enrollment_superadmin_not_found userId={}", requestingUserId);
+            coach = new User();
+            coach.setUserId(requestingUserId);
+            coach.setName("Super Admin");
+          }
+        } else {
+          coach = getUser(requestingUserId, organizationId);
+        }
+
         activityLogService.logEnrollment(
             coach.getUserId(),
             coach.getName(),
@@ -144,11 +166,14 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         requestingUserId,
         organizationId);
 
-    // Validate organization access
-    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    // Check if super admin can access this organization
+    if (!superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+      // Validate organization access
+      validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
-    // Validate user access - students can only view their own enrollments, coaches can view all
-    validationUtil.validateUserAccess(requestingUserId, studentId, organizationId);
+      // Validate user access - students can only view their own enrollments, coaches can view all
+      validationUtil.validateUserAccess(requestingUserId, studentId, organizationId);
+    }
 
     try {
       String enrollmentId = batchId + ":" + studentId;
@@ -198,22 +223,41 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         requestingUserId,
         organizationId);
 
-    // Validate organization access
-    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    boolean superUserCanAccessOrganization =
+        superAdminAuthService.canAccessOrganization(requestingUserId, organizationId);
+    // Check if super admin can access this organization
+    if (!superUserCanAccessOrganization) {
+      // Validate organization access
+      validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    }
 
-    // Authorization: Students can only see their own enrollments
-    User requestingUser = getUser(requestingUserId, organizationId);
-    if (!UserType.COACH.name().equals(requestingUser.getUserType())) {
-      // Force studentId to be the requesting user for students
-      if (studentId.isEmpty() || !studentId.get().equals(requestingUserId)) {
-        log.warn(
-            "evt=get_all_enrollments_access_denied userId={} requestedStudentId={}"
-                + " organizationId={}",
-            requestingUserId,
-            studentId.orElse("none"),
-            organizationId);
-        throw new AuthException(
-            "ACCESS_DENIED", "Students can only access their own enrollments", 403);
+    // Get requesting user for authorization checks
+    User requestingUser = null;
+    if (superUserCanAccessOrganization) {
+      // For superadmin, get user without organization constraint
+      requestingUser = userService.getUserById(requestingUserId).orElse(null);
+      if (requestingUser == null) {
+        log.error("evt=get_all_enrollments_superadmin_not_found userId={}", requestingUserId);
+        throw UserException.userNotFound("Superadmin user not found: " + requestingUserId);
+      }
+    } else {
+      requestingUser = getUser(requestingUserId, organizationId);
+    }
+
+    // Authorization: Students can only see their own enrollments (unless super admin)
+    if (!superUserCanAccessOrganization) {
+      if (!UserType.COACH.name().equals(requestingUser.getUserType())) {
+        // Force studentId to be the requesting user for students
+        if (studentId.isEmpty() || !studentId.get().equals(requestingUserId)) {
+          log.warn(
+              "evt=get_all_enrollments_access_denied userId={} requestedStudentId={}"
+                  + " organizationId={}",
+              requestingUserId,
+              studentId.orElse("none"),
+              organizationId);
+          throw new AuthException(
+              "ACCESS_DENIED", "Students can only access their own enrollments", 403);
+        }
       }
     }
 
@@ -234,18 +278,19 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         // Get enrollments by student
         allEnrollments = getEnrollmentsByStudentFromDb(studentId.get(), organizationId);
       } else {
-        // Get all enrollments (only for coaches)
-        if (UserType.COACH.name().equals(requestingUser.getUserType())) {
-          Map<String, AttributeValue> eav = new HashMap<>();
-          eav.put(":organizationId", new AttributeValue().withS(organizationId));
+        // Get all enrollments (only for coaches and super admins)
+        if (UserType.COACH.name().equals(requestingUser.getUserType())
+            || superUserCanAccessOrganization) {
+          // Use query instead of scan for better performance
+          Enrollment enrollmentKey = new Enrollment();
+          enrollmentKey.setOrganizationId(organizationId);
 
-          DynamoDBScanExpression scanExpression =
-              new DynamoDBScanExpression()
-                  .withFilterExpression("organizationId = :organizationId")
-                  .withExpressionAttributeValues(eav);
-          PaginatedScanList<Enrollment> scanResult =
-              dynamoDBMapper.scan(Enrollment.class, scanExpression);
-          allEnrollments = new ArrayList<>(scanResult);
+          DynamoDBQueryExpression<Enrollment> queryExpression =
+              new DynamoDBQueryExpression<Enrollment>().withHashKeyValues(enrollmentKey);
+
+          PaginatedQueryList<Enrollment> queryResult =
+              dynamoDBMapper.query(Enrollment.class, queryExpression);
+          allEnrollments = new ArrayList<>(queryResult);
         }
       }
 
@@ -297,11 +342,17 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         requestingUserId,
         organizationId);
 
-    // Validate organization access
-    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    // Check if super admin can access this organization
+    if (!superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+      // Validate organization access
+      validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    }
 
-    // Authorization: Only coaches can update enrollments
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      // Authorization: Only coaches can update enrollments
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
 
     try {
       String enrollmentId = batchId + ":" + studentId;
@@ -367,11 +418,17 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         requestingUserId,
         organizationId);
 
-    // Validate organization access
-    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    // Check if super admin can access this organization
+    if (!superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+      // Validate organization access
+      validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    }
 
-    // Authorization: Only coaches can delete enrollments
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      // Authorization: Only coaches can delete enrollments
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
 
     try {
       String enrollmentId = batchId + ":" + studentId;
@@ -396,8 +453,22 @@ public class EnrollmentServiceImpl implements EnrollmentService {
 
       // Log enrollment removal activity
       try {
-        User coach = getUser(requestingUserId, organizationId);
+        User coach = null;
         User student = getUser(studentId, organizationId);
+
+        // For superadmin, get user without organization constraint, otherwise get the coach user
+        if (superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+          coach = userService.getUserById(requestingUserId).orElse(null);
+          if (coach == null) {
+            log.warn("evt=delete_enrollment_superadmin_not_found userId={}", requestingUserId);
+            coach = new User();
+            coach.setUserId(requestingUserId);
+            coach.setName("Super Admin");
+          }
+        } else {
+          coach = getUser(requestingUserId, organizationId);
+        }
+
         activityLogService.logAction(
             ActionType.REMOVE_ENROLLMENT,
             coach.getUserId(),
@@ -442,11 +513,17 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         requestingUserId,
         organizationId);
 
-    // Validate organization access
-    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    // Check if super admin can access this organization
+    if (!superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+      // Validate organization access
+      validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    }
 
-    // Only coaches can view batch enrollments
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      // Only coaches can view batch enrollments
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
 
     try {
       List<Enrollment> enrollments = getEnrollmentsByBatchFromDb(batchId, organizationId);
@@ -474,11 +551,14 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         requestingUserId,
         organizationId);
 
-    // Validate organization access
-    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    // Check if super admin can access this organization
+    if (!superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+      // Validate organization access
+      validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
 
-    // Validate user access - students can only view their own enrollments, coaches can view any
-    validationUtil.validateUserAccess(requestingUserId, studentId, organizationId);
+      // Validate user access - students can only view their own enrollments, coaches can view any
+      validationUtil.validateUserAccess(requestingUserId, studentId, organizationId);
+    }
 
     try {
       List<Enrollment> enrollments = getEnrollmentsByStudentFromDb(studentId, organizationId);
@@ -505,11 +585,16 @@ public class EnrollmentServiceImpl implements EnrollmentService {
         requestingUserId,
         organizationId);
 
-    // Validate organization access
-    validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    if (!superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+      // Validate organization access
+      validationUtil.validateOrganizationAccess(requestingUserId, organizationId);
+    }
 
-    // Authorization: Only coaches can enroll students
-    validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    // Check if super admin controls are enabled and user is global super admin
+    if (!superAdminAuthService.canModifyOrganization(requestingUserId, organizationId)) {
+      // Authorization: Only coaches can enroll students
+      validationUtil.requireCoachPermission(requestingUserId, organizationId);
+    }
 
     List<EnrollmentResponseDTO> results = new ArrayList<>();
     List<String> errors = new ArrayList<>();
@@ -552,9 +637,22 @@ public class EnrollmentServiceImpl implements EnrollmentService {
 
         // Log enrollment activity
         try {
-          User coach = getUser(requestingUserId, organizationId);
+          User coach = null;
           User student = getUser(request.getStudentId(), organizationId);
           Batch batch = getBatch(request.getBatchId(), organizationId);
+
+          // For superadmin, get user without organization constraint, otherwise get the coach user
+          if (superAdminAuthService.canAccessOrganization(requestingUserId, organizationId)) {
+            coach = userService.getUserById(requestingUserId).orElse(null);
+            if (coach == null) {
+              log.warn("evt=bulk_enrollment_superadmin_not_found userId={}", requestingUserId);
+              coach = new User();
+              coach.setUserId(requestingUserId);
+              coach.setName("Super Admin");
+            }
+          } else {
+            coach = getUser(requestingUserId, organizationId);
+          }
           activityLogService.logEnrollment(
               coach.getUserId(),
               coach.getName(),
@@ -598,7 +696,9 @@ public class EnrollmentServiceImpl implements EnrollmentService {
     try {
       List<Enrollment> enrollments = getEnrollmentsByBatchFromDb(batchId, organizationId);
       return (int)
-          enrollments.stream().filter(e -> "ENROLLED".equals(e.getEnrollmentStatus())).count();
+          enrollments.stream()
+              .filter(e -> EnrollmentStatus.ENROLLED.equals(e.getEnrollmentStatus()))
+              .count();
     } catch (Exception e) {
       log.error(
           "evt=count_active_enrollments_error batchId={} organizationId={} error={}",
@@ -615,7 +715,7 @@ public class EnrollmentServiceImpl implements EnrollmentService {
     try {
       List<Enrollment> enrollments = getEnrollmentsByStudentFromDb(studentId, organizationId);
       return enrollments.stream()
-          .filter(e -> "ENROLLED".equals(e.getEnrollmentStatus()))
+          .filter(e -> EnrollmentStatus.ENROLLED.equals(e.getEnrollmentStatus()))
           .map(Enrollment::getBatchId)
           .collect(Collectors.toList());
     } catch (Exception e) {
@@ -626,36 +726,6 @@ public class EnrollmentServiceImpl implements EnrollmentService {
           e.getMessage(),
           e);
       return new ArrayList<>();
-    }
-  }
-
-  @Override
-  public boolean isStudentEnrolled(String batchId, String studentId, String organizationId) {
-    try {
-      // Use scan to find enrollment by batchId, studentId, and organizationId
-      Map<String, AttributeValue> eav = new HashMap<>();
-      eav.put(":batchId", new AttributeValue().withS(batchId));
-      eav.put(":studentId", new AttributeValue().withS(studentId));
-      eav.put(":organizationId", new AttributeValue().withS(organizationId));
-
-      DynamoDBScanExpression scanExpression =
-          new DynamoDBScanExpression()
-              .withFilterExpression(
-                  "batchId = :batchId AND studentId = :studentId AND organizationId ="
-                      + " :organizationId")
-              .withExpressionAttributeValues(eav);
-
-      PaginatedScanList<Enrollment> results = dynamoDBMapper.scan(Enrollment.class, scanExpression);
-      return !results.isEmpty() && "ENROLLED".equals(results.get(0).getEnrollmentStatus().name());
-    } catch (Exception e) {
-      log.error(
-          "evt=is_student_enrolled_error batchId={} studentId={} organizationId={} error={}",
-          batchId,
-          studentId,
-          organizationId,
-          e.getMessage(),
-          e);
-      return false;
     }
   }
 
@@ -828,13 +898,9 @@ public class EnrollmentServiceImpl implements EnrollmentService {
 
   private User getUser(String userId, String organizationId) {
     try {
-      User user = userService.getUserById(userId).orElse(null);
+      User user = userService.getUserByIdAndOrganizationId(userId, organizationId).orElse(null);
       if (user == null) {
         throw UserException.userNotFound("User not found: " + userId);
-      }
-
-      if (!organizationId.equals(user.getOrganizationId())) {
-        throw UserException.validationError("User does not belong to this organization");
       }
 
       return user;
@@ -873,6 +939,41 @@ public class EnrollmentServiceImpl implements EnrollmentService {
           e.getMessage(),
           e);
       throw UserException.databaseError("Failed to retrieve batch", e);
+    }
+  }
+
+  @Override
+  public boolean isStudentEnrolled(String batchId, String studentId, String organizationId) {
+    log.info(
+        "evt=check_student_enrollment_start batchId={} studentId={} organizationId={}",
+        batchId,
+        studentId,
+        organizationId);
+
+    try {
+      String enrollmentId = batchId + ":" + studentId;
+      Enrollment enrollment = dynamoDBMapper.load(Enrollment.class, organizationId, enrollmentId);
+      boolean isEnrolled =
+          enrollment != null && organizationId.equals(enrollment.getOrganizationId());
+
+      log.info(
+          "evt=check_student_enrollment_success batchId={} studentId={} organizationId={}"
+              + " isEnrolled={}",
+          batchId,
+          studentId,
+          organizationId,
+          isEnrolled);
+
+      return isEnrolled;
+    } catch (Exception e) {
+      log.error(
+          "evt=check_student_enrollment_error batchId={} studentId={} organizationId={} error={}",
+          batchId,
+          studentId,
+          organizationId,
+          e.getMessage(),
+          e);
+      return false;
     }
   }
 }
