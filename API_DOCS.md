@@ -1,7 +1,7 @@
 # Genius Chess Academy API Documentation
 
 ## Overview
-This document describes the REST API endpoints for the Genius Chess Academy management system.
+This document describes the REST API endpoints for the Genius Chess Academy system.
 
 ## Base URL
 - Development: `http://localhost:8080/api/v1`

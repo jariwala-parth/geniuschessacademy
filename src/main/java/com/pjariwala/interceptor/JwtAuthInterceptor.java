@@ -74,6 +74,7 @@ public class JwtAuthInterceptor implements HandlerInterceptor {
         || uri.startsWith("/swagger-ui")
         || uri.startsWith("/v3/api-docs")
         || uri.startsWith("/actuator")
-        || (uri.equals("/api/v1/auth/login") && "POST".equals(method));
+        || (uri.equals("/api/v1/auth/login") && "POST".equals(method))
+        || (uri.equals("/api/v1/auth/refresh") && "POST".equals(method));
   }
 }

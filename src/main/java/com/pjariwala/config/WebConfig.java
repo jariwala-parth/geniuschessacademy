@@ -18,6 +18,7 @@ public class WebConfig implements WebMvcConfigurer {
         .addPathPatterns("/api/**") // Apply to all API endpoints
         .excludePathPatterns(
             "/api/v1/auth/login", // Allow login without auth
+            "/api/v1/auth/respond-challenge", // Allow set new password api
             "/swagger-ui/**",
             "/v3/api-docs/**");
   }

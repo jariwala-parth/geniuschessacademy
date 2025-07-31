@@ -4,6 +4,7 @@ import com.pjariwala.dto.AuthChallengeRequest;
 import com.pjariwala.dto.AuthRequest;
 import com.pjariwala.dto.AuthResponse;
 import com.pjariwala.dto.LoginResult;
+import com.pjariwala.dto.RefreshTokenRequest;
 import com.pjariwala.dto.SignupRequest;
 import com.pjariwala.dto.UserInfo;
 import com.pjariwala.service.ActivityLogService;
@@ -103,9 +104,17 @@ public class AuthController {
   }
 
   @PostMapping("/refresh")
-  public ResponseEntity<AuthResponse> refreshToken(@RequestParam String refreshToken) {
-    log.info("evt=refresh_token_request");
-    AuthResponse response = authService.refreshToken(refreshToken);
+  public ResponseEntity<AuthResponse> refreshToken(
+      @RequestBody RefreshTokenRequest refreshTokenRequest) {
+    log.info(
+        "evt=refresh_token_request refreshToken={}",
+        refreshTokenRequest.getRefreshToken() != null
+            ? refreshTokenRequest
+                    .getRefreshToken()
+                    .substring(0, Math.min(20, refreshTokenRequest.getRefreshToken().length()))
+                + "..."
+            : "null");
+    AuthResponse response = authService.refreshToken(refreshTokenRequest.getRefreshToken());
     log.info("evt=refresh_token_success");
     return ResponseEntity.ok(response);
   }

@@ -57,16 +57,35 @@ public class UserServiceImpl implements UserService {
   @Override
   public Optional<User> getUserById(String userId) {
     try {
-      // Query by primary key (userId + userType)
-      // Since we don't know the userType, we need to scan or query both possible values
-      User coach = dynamoDBMapper.load(User.class, userId, UserType.COACH.name());
-      if (coach != null) {
-        return Optional.of(coach);
+      log.info("evt=get_user_by_id_start userId={}", userId);
+
+      // Since the primary key is organizationId + userId, we need to scan to find the user
+      // This is not efficient, but we don't know the organizationId
+      Map<String, AttributeValue> eav = new HashMap<>();
+      eav.put(":userId", new AttributeValue().withS(userId));
+
+      DynamoDBScanExpression scanExpression =
+          new DynamoDBScanExpression()
+              .withFilterExpression("userId = :userId")
+              .withExpressionAttributeValues(eav);
+
+      PaginatedScanList<User> scanResult = dynamoDBMapper.scan(User.class, scanExpression);
+      List<User> users = new ArrayList<>(scanResult);
+
+      log.info("evt=get_user_by_id_result count={} found={}", users.size(), !users.isEmpty());
+
+      if (!users.isEmpty()) {
+        User user = users.get(0);
+        log.info(
+            "evt=get_user_by_id_found userId={} organizationId={} userType={}",
+            user.getUserId(),
+            user.getOrganizationId(),
+            user.getUserType());
       }
 
-      User student = dynamoDBMapper.load(User.class, userId, UserType.STUDENT.name());
-      return Optional.ofNullable(student);
+      return users.isEmpty() ? Optional.empty() : Optional.of(users.get(0));
     } catch (Exception e) {
+      log.error("evt=get_user_by_id_error userId={} error={}", userId, e.getMessage(), e);
       return Optional.empty();
     }
   }
@@ -143,20 +162,42 @@ public class UserServiceImpl implements UserService {
   @Override
   public Optional<User> getUserByCognitoSub(String cognitoSub) {
     try {
-      // Use GSI for cognitoSub lookup
+      log.info("evt=get_user_by_cognito_sub_start cognitoSub={}", cognitoSub);
+
+      // Use scan on main table since GSI structure is complex and we don't know organizationId
       Map<String, AttributeValue> eav = new HashMap<>();
       eav.put(":cognitoSub", new AttributeValue().withS(cognitoSub));
 
-      DynamoDBQueryExpression<User> queryExpression =
-          new DynamoDBQueryExpression<User>()
-              .withIndexName("cognitoSub-index")
-              .withConsistentRead(false)
-              .withKeyConditionExpression("cognitoSub = :cognitoSub")
+      DynamoDBScanExpression scanExpression =
+          new DynamoDBScanExpression()
+              .withFilterExpression("cognitoSub = :cognitoSub")
               .withExpressionAttributeValues(eav);
 
-      List<User> users = dynamoDBMapper.query(User.class, queryExpression);
+      log.info("evt=get_user_by_cognito_sub_scan scanExpression={}", scanExpression);
+
+      PaginatedScanList<User> scanResult = dynamoDBMapper.scan(User.class, scanExpression);
+      List<User> users = new ArrayList<>(scanResult);
+
+      log.info(
+          "evt=get_user_by_cognito_sub_result count={} found={}", users.size(), !users.isEmpty());
+
+      if (!users.isEmpty()) {
+        User user = users.get(0);
+        log.info(
+            "evt=get_user_by_cognito_sub_found userId={} organizationId={} name={} userType={}",
+            user.getUserId(),
+            user.getOrganizationId(),
+            user.getName(),
+            user.getUserType());
+      }
+
       return users.isEmpty() ? Optional.empty() : Optional.of(users.get(0));
     } catch (Exception e) {
+      log.error(
+          "evt=get_user_by_cognito_sub_error cognitoSub={} error={}",
+          cognitoSub,
+          e.getMessage(),
+          e);
       return Optional.empty();
     }
   }

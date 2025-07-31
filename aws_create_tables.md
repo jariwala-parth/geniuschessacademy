@@ -26,9 +26,9 @@ aws dynamodb create-table \
         AttributeName=userId,KeyType=RANGE \
     --billing-mode PAY_PER_REQUEST \
     --global-secondary-indexes \
-        'IndexName=username-index,KeySchema=[{AttributeName=organizationId,KeyType=HASH},{AttributeName=username,KeyType=RANGE}],Projection={ProjectionType=ALL}' \
-        'IndexName=email-index,KeySchema=[{AttributeName=organizationId,KeyType=HASH},{AttributeName=email,KeyType=RANGE}],Projection={ProjectionType=ALL}' \
-        'IndexName=cognitoSub-index,KeySchema=[{AttributeName=organizationId,KeyType=HASH},{AttributeName=cognitoSub,KeyType=RANGE}],Projection={ProjectionType=ALL}' \
+        'IndexName=username-index,KeySchema=[{AttributeName=username,KeyType=HASH}],Projection={ProjectionType=ALL}' \
+        'IndexName=email-index,KeySchema=[{AttributeName=email,KeyType=HASH}],Projection={ProjectionType=ALL}' \
+        'IndexName=cognitoSub-index,KeySchema=[{AttributeName=cognitoSub,KeyType=HASH}],Projection={ProjectionType=ALL}' \
     --tags Key=Project,Value=GeniusChessAcademy
     
 

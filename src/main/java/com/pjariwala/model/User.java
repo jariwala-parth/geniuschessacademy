@@ -66,8 +66,4 @@ public class User {
   @DynamoDBAttribute(attributeName = "joiningDate")
   @DynamoDBTypeConverted(converter = LocalDateTimeConverter.class)
   private LocalDateTime joiningDate;
-
-  // Coach-specific fields
-  @DynamoDBAttribute(attributeName = "isAdmin")
-  private Boolean isAdmin;
 }

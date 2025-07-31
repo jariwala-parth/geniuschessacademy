@@ -38,6 +38,6 @@ public class SignupRequest {
   private String guardianName;
   private String guardianPhone;
 
-  // Coach-specific fields
-  private Boolean isAdmin = false;
+  // Note: isAdmin field removed - use userType instead
+  // userType can be: "COACH", "STUDENT", "SUPER_ADMIN"
 }

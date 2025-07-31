@@ -18,6 +18,8 @@ import com.amazonaws.services.cognitoidp.model.ConfirmForgotPasswordRequest;
 import com.amazonaws.services.cognitoidp.model.ExpiredCodeException;
 import com.amazonaws.services.cognitoidp.model.ForgotPasswordRequest;
 import com.amazonaws.services.cognitoidp.model.GlobalSignOutRequest;
+import com.amazonaws.services.cognitoidp.model.InitiateAuthRequest;
+import com.amazonaws.services.cognitoidp.model.InitiateAuthResult;
 import com.amazonaws.services.cognitoidp.model.InvalidPasswordException;
 import com.amazonaws.services.cognitoidp.model.NotAuthorizedException;
 import com.amazonaws.services.cognitoidp.model.RespondToAuthChallengeRequest;
@@ -113,64 +115,6 @@ public class AuthServiceImpl implements AuthService {
     }
   }
 
-  /** Validate signup request */
-  private void validateSignupRequest(SignupRequest signupRequest) {
-    log.debug("Validating signup request for email: {}", signupRequest.getEmail());
-
-    if (signupRequest.getUsername() == null || signupRequest.getUsername().trim().isEmpty()) {
-      log.error("Signup validation failed: Username is required");
-      throw AuthException.validationError("Username is required");
-    }
-
-    if (signupRequest.getEmail() == null || signupRequest.getEmail().trim().isEmpty()) {
-      log.error("Signup validation failed: Email is required");
-      throw AuthException.validationError("Email is required");
-    }
-
-    if (signupRequest.getPassword() == null || signupRequest.getPassword().length() < 8) {
-      log.error(
-          "Signup validation failed: Password must be at least 8 characters long for email: {}",
-          signupRequest.getEmail());
-      throw AuthException.invalidPassword("Password must be at least 8 characters long");
-    }
-
-    if (signupRequest.getName() == null || signupRequest.getName().trim().isEmpty()) {
-      log.error(
-          "Signup validation failed: Name is required for email: {}", signupRequest.getEmail());
-      throw AuthException.validationError("Name is required");
-    }
-
-    if (signupRequest.getUserType() == null
-        || (!signupRequest.getUserType().equals("COACH")
-            && !signupRequest.getUserType().equals("STUDENT"))) {
-      log.error(
-          "Signup validation failed: Invalid user type '{}' for email: {}",
-          signupRequest.getUserType(),
-          signupRequest.getEmail());
-      throw AuthException.validationError("User type must be either COACH or STUDENT");
-    }
-
-    log.debug("Signup request validation passed for email: {}", signupRequest.getEmail());
-  }
-
-  /** Validate login request */
-  private void validateAuthRequest(AuthRequest authRequest) {
-    log.debug("Validating login request for: {}", authRequest.getLogin());
-
-    if (authRequest.getLogin() == null || authRequest.getLogin().trim().isEmpty()) {
-      log.error("Login validation failed: Login identifier is required");
-      throw AuthException.validationError("Login (username, email, or phone) is required");
-    }
-
-    if (authRequest.getPassword() == null || authRequest.getPassword().trim().isEmpty()) {
-      log.error(
-          "Login validation failed: Password is required for login: {}", authRequest.getLogin());
-      throw AuthException.validationError("Password is required");
-    }
-
-    log.debug("Login request validation passed for: {}", authRequest.getLogin());
-  }
-
   @Override
   public AuthResponse signup(SignupRequest signupRequest) {
     log.info(
@@ -225,15 +169,8 @@ public class AuthServiceImpl implements AuthService {
         }
       }
 
-      // Add coach-specific attributes
-      if ("COACH".equals(signupRequest.getUserType())) {
-        cognitoSignupRequest
-            .getUserAttributes()
-            .add(
-                new AttributeType()
-                    .withName("custom:is_admin")
-                    .withValue(signupRequest.getIsAdmin().toString()));
-      }
+      // Note: isAdmin field removed - use userType instead
+      // No coach-specific attributes needed
 
       log.debug("Creating user in Cognito User Pool for email: {}", signupRequest.getEmail());
       SignUpResult signUpResult = cognitoClient.signUp(cognitoSignupRequest);
@@ -259,7 +196,7 @@ public class AuthServiceImpl implements AuthService {
       user.setEmail(signupRequest.getEmail());
       user.setName(signupRequest.getName());
       user.setPhoneNumber(signupRequest.getPhoneNumber());
-      user.setUsername(signupRequest.getUsername()); // ✅ Store Cognito username
+      user.setUsername(signupRequest.getUsername());
       user.setCognitoSub(signUpResult.getUserSub());
       user.setIsActive(true);
       user.setCreatedAt(LocalDateTime.now());
@@ -270,7 +207,8 @@ public class AuthServiceImpl implements AuthService {
         user.setGuardianPhone(signupRequest.getGuardianPhone());
         user.setJoiningDate(LocalDateTime.now());
       } else if ("COACH".equals(signupRequest.getUserType())) {
-        user.setIsAdmin(signupRequest.getIsAdmin());
+        // Note: isAdmin field removed - use userType instead
+        // COACH users are not admin by default
       }
 
       log.debug("Creating user record in our system for email: {}", signupRequest.getEmail());
@@ -415,6 +353,7 @@ public class AuthServiceImpl implements AuthService {
       // Prepare challenge response parameters
       Map<String, String> challengeResponses = new HashMap<>();
       challengeResponses.put("NEW_PASSWORD", challengeRequest.getNewPassword());
+      challengeResponses.put("USERNAME", challengeRequest.getUsername());
       // Add SECRET_HASH for admin flow
       challengeResponses.put("SECRET_HASH", calculateSecretHash(challengeRequest.getUsername()));
 
@@ -473,51 +412,108 @@ public class AuthServiceImpl implements AuthService {
         throw AuthException.validationError("Refresh token is required");
       }
 
-      // Prepare authentication parameters for refresh
+      log.info("evt=refresh_token_oauth2_start userPoolId={} clientId={}", userPoolId, clientId);
+
+      // For clients with secret, use AdminInitiateAuth to avoid SECRET_HASH requirement
+      // For clients without secret, use regular InitiateAuth
       Map<String, String> authParameters = new HashMap<>();
       authParameters.put("REFRESH_TOKEN", refreshToken);
 
-      // Initiate auth with refresh token
-      AdminInitiateAuthRequest initiateAuthRequest =
-          new AdminInitiateAuthRequest()
-              .withUserPoolId(userPoolId)
-              .withClientId(clientId)
-              .withAuthFlow(AuthFlowType.REFRESH_TOKEN_AUTH)
-              .withAuthParameters(authParameters);
+      if (clientSecret != null && !clientSecret.trim().isEmpty()) {
+        log.info(
+            "evt=refresh_token_admin_auth client_has_secret=true userPoolId={} clientId={}",
+            userPoolId,
+            clientId);
 
-      AdminInitiateAuthResult authResult = cognitoClient.adminInitiateAuth(initiateAuthRequest);
-      AuthenticationResultType authenticationResult = authResult.getAuthenticationResult();
+        // Use AdminInitiateAuth for clients with secret (doesn't require SECRET_HASH)
+        AdminInitiateAuthRequest adminRequest =
+            new AdminInitiateAuthRequest()
+                .withUserPoolId(userPoolId)
+                .withClientId(clientId)
+                .withAuthFlow(AuthFlowType.REFRESH_TOKEN_AUTH)
+                .withAuthParameters(authParameters);
 
-      if (authenticationResult == null) {
-        log.error("evt=refresh_token_error msg=no_result_returned");
-        throw AuthException.invalidToken();
-      }
+        AdminInitiateAuthResult adminResult = cognitoClient.adminInitiateAuth(adminRequest);
+        AuthenticationResultType authenticationResult = adminResult.getAuthenticationResult();
 
-      // Build response with new tokens
-      AuthResponse response = new AuthResponse();
-      response.setAccessToken(authenticationResult.getAccessToken());
-      response.setIdToken(authenticationResult.getIdToken());
-      response.setTokenType(authenticationResult.getTokenType());
-      response.setExpiresIn(authenticationResult.getExpiresIn());
+        if (authenticationResult == null) {
+          log.error("evt=refresh_token_error msg=no_result_returned");
+          throw AuthException.invalidToken();
+        }
 
-      // Refresh token might not be returned in refresh operation
-      if (authenticationResult.getRefreshToken() != null) {
-        response.setRefreshToken(authenticationResult.getRefreshToken());
+        // Build response with new tokens
+        AuthResponse response = new AuthResponse();
+        response.setAccessToken(authenticationResult.getAccessToken());
+        response.setIdToken(authenticationResult.getIdToken());
+        response.setTokenType(authenticationResult.getTokenType());
+        response.setExpiresIn(authenticationResult.getExpiresIn());
+
+        // Set refresh token - it may or may not be rotated depending on Cognito config
+        if (authenticationResult.getRefreshToken() != null) {
+          response.setRefreshToken(authenticationResult.getRefreshToken());
+          log.info("evt=refresh_token_success msg=new_refresh_token_received");
+        } else {
+          response.setRefreshToken(refreshToken); // Keep the same refresh token
+          log.info("evt=refresh_token_success msg=refresh_token_not_rotated");
+        }
+
+        log.info(
+            "evt=refresh_token_success access_token_length={}",
+            response.getAccessToken() != null ? response.getAccessToken().length() : 0);
+        return response;
+
       } else {
-        response.setRefreshToken(refreshToken); // Use the original refresh token
-      }
+        log.info(
+            "evt=refresh_token_initiate_auth client_has_secret=false userPoolId={} clientId={}",
+            userPoolId,
+            clientId);
 
-      log.info("evt=refresh_token_success");
-      return response;
+        // Use InitiateAuth for clients without secret
+        InitiateAuthRequest initiateAuthRequest =
+            new InitiateAuthRequest()
+                .withClientId(clientId)
+                .withAuthFlow(AuthFlowType.REFRESH_TOKEN_AUTH)
+                .withAuthParameters(authParameters);
+
+        InitiateAuthResult authResult = cognitoClient.initiateAuth(initiateAuthRequest);
+        AuthenticationResultType authenticationResult = authResult.getAuthenticationResult();
+
+        if (authenticationResult == null) {
+          log.error("evt=refresh_token_error msg=no_result_returned");
+          throw AuthException.invalidToken();
+        }
+
+        // Build response with new tokens
+        AuthResponse response = new AuthResponse();
+        response.setAccessToken(authenticationResult.getAccessToken());
+        response.setIdToken(authenticationResult.getIdToken());
+        response.setTokenType(authenticationResult.getTokenType());
+        response.setExpiresIn(authenticationResult.getExpiresIn());
+
+        // Set refresh token - it may or may not be rotated depending on Cognito config
+        if (authenticationResult.getRefreshToken() != null) {
+          response.setRefreshToken(authenticationResult.getRefreshToken());
+          log.info("evt=refresh_token_success msg=new_refresh_token_received");
+        } else {
+          response.setRefreshToken(refreshToken); // Keep the same refresh token
+          log.info("evt=refresh_token_success msg=refresh_token_not_rotated");
+        }
+
+        log.info(
+            "evt=refresh_token_success access_token_length={}",
+            response.getAccessToken() != null ? response.getAccessToken().length() : 0);
+        return response;
+      }
 
     } catch (AuthException e) {
       // Re-throw our custom auth exceptions - don't wrap them
       throw e;
     } catch (NotAuthorizedException e) {
-      log.error("evt=refresh_token_unauthorized msg=invalid_refresh_token", e);
+      log.error(
+          "evt=refresh_token_unauthorized msg=invalid_refresh_token error={}", e.getMessage(), e);
       throw AuthException.invalidToken();
     } catch (Exception e) {
-      log.error("evt=refresh_token_system_error msg=unexpected_error", e);
+      log.error("evt=refresh_token_system_error msg=unexpected_error error={}", e.getMessage(), e);
       throw AuthException.cognitoError("System error during token refresh", e);
     }
   }
